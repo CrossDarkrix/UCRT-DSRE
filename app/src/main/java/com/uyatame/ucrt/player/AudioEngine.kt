@@ -817,6 +817,9 @@ class AudioOutput(
         val frames = src.remaining() / frameBytes
         val samples = frames * channels
         if (samples <= 0) return
+        // Feed a duplicate buffer to the visualizer before any output path consumes src.
+        // Analysis is lock-free and never blocks playback.
+        SpectrumTap.submitPcm(src, srcEnc, frames, channels, sampleRate)
         framesWritten += frames
         val d = dac
         if (d != null) {

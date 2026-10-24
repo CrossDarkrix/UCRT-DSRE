@@ -86,6 +86,10 @@ data class AppSettings(
     /** 文字の色(ARGB。0 = テーマの標準の色) */
     val textColor: Int = 0,
     val ambientPlayer: Boolean = true,
+    /** スペクトラムアナライザーの描画更新間隔。8～200ms */
+    val visualizerRefreshMs: Int = 24,
+    /** スペクトラム色。0は再生画面のテーマ色へ自動追従、その他はARGB */
+    val visualizerColor: Int = 0,
     /** アンビエントモードで背景のジャケットをぼかす(オフならぼかさずに薄く敷く) */
     val ambientBlur: Boolean = true,
     /** 画面下のナビゲーションバーを隠す(画面の下の端からスワイプすると一時的に出る) */
@@ -234,6 +238,8 @@ object Keys {
     val listArt = booleanPreferencesKey("listArt")
     val dynamicColor = booleanPreferencesKey("dynamicColor")
     val ambientPlayer = booleanPreferencesKey("ambientPlayer")
+    val visualizerRefreshMs = intPreferencesKey("visualizerRefreshMs")
+    val visualizerColor = intPreferencesKey("visualizerColor")
     val themeColor = intPreferencesKey("themeColor")
     val textColor = intPreferencesKey("textColor")
     val ambientBlur = booleanPreferencesKey("ambientBlur")
@@ -322,6 +328,8 @@ class SettingsRepository(private val context: Context) {
             listArt = p[Keys.listArt] ?: d.listArt,
             dynamicColor = p[Keys.dynamicColor] ?: d.dynamicColor,
             ambientPlayer = p[Keys.ambientPlayer] ?: d.ambientPlayer,
+            visualizerRefreshMs = (p[Keys.visualizerRefreshMs] ?: d.visualizerRefreshMs).coerceIn(8, 200),
+            visualizerColor = p[Keys.visualizerColor] ?: d.visualizerColor,
             themeColor = p[Keys.themeColor] ?: d.themeColor,
             textColor = p[Keys.textColor] ?: d.textColor,
             ambientBlur = p[Keys.ambientBlur] ?: d.ambientBlur,

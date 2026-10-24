@@ -568,6 +568,16 @@ private fun LauncherIconPicker(selectedId: String, onSelected: (String) -> Unit)
 /** 再生画面の設定(アンビエントモード・ほかの音楽アプリ) */
 @Composable
 private fun PlayerScreenPage(vm: MainViewModel, s: AppSettings) {
+    Section("スペクトラムアナライザー / Spectrum Analyzer") {
+        IntSlider(
+            "更新間隔 / Refresh interval",
+            s.visualizerRefreshMs,
+            8..200,
+            { "$it ms (${(1000f / it).toInt()} fps)" },
+            "8～200msで細かく調整します。値を小さくすると滑らかになり、値を大きくすると負荷を抑えます。",
+        ) { vm.set(Keys.visualizerRefreshMs, it) }
+        VisualizerColorPicker(s.visualizerColor) { vm.set(Keys.visualizerColor, it) }
+    }
     Section(S(R.string.ambient_mode)) {
         SwitchRow(
             S(R.string.ambient_mode),
@@ -848,6 +858,46 @@ private fun LicensePage(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
                 }
             },
         )
+    }
+}
+
+/** スペクトラム専用色。0は再生画面テーマへの自動追従。 */
+@Composable
+private fun VisualizerColorPicker(value: Int, onChange: (Int) -> Unit) {
+    val fallback = MaterialTheme.colorScheme.primary.toArgb()
+    var picking by remember { mutableStateOf(false) }
+    if (picking) {
+        ColorPickerDialog(
+            "スペクトラム色 / Spectrum color",
+            if (value == 0) fallback else value,
+            { picking = false },
+            onChange,
+            onReset = { onChange(0) },
+        )
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("スペクトラム色 / Spectrum color", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            if (value == 0) "再生画面のテーマ色へ自動追従します。" else "カスタム色を使用中です。タップして色相・彩度・明度またはカラーコードで変更できます。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier.fillMaxWidth().clickable { picking = true }.padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier.size(40.dp).clip(CircleShape)
+                    .background(Color(if (value == 0) fallback else value))
+                    .border(2.dp, MaterialTheme.colorScheme.outline, CircleShape),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(if (value == 0) "自動 / Theme" else "#%06X".format(value and 0xFFFFFF))
+                Text("タップして変更", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+        }
     }
 }
 

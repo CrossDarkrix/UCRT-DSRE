@@ -140,6 +140,7 @@ import com.uyatame.ucrt.player.OutputKind
 import com.uyatame.ucrt.player.PlayItem
 import com.uyatame.ucrt.player.PlayerController
 import com.uyatame.ucrt.player.usb.UsbDac
+import com.uyatame.ucrt.visualizer.PlayerSpectrumAnalyzer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -623,7 +624,17 @@ private fun PlayerPage(
                     )
                 }
             }
-            Spacer(Modifier.height(if (compact) 4.dp else 12.dp))
+            Spacer(Modifier.height(if (compact) 4.dp else 10.dp))
+            // ---- Real-time waveform / FFT spectrum analyzer ----
+            PlayerSpectrumAnalyzer(
+                accent = col.accent,
+                content = col.content,
+                compact = compact,
+                refreshMs = s.visualizerRefreshMs,
+                colorArgb = s.visualizerColor,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(if (compact) 3.dp else 8.dp))
             // ---- 再生位置 ----
             SeekBar(p, dur, seeking, col, { seeking = it }) {
                 seeking?.let { p.seek((it * dur).toLong()) }
