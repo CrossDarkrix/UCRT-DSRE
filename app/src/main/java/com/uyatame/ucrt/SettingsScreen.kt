@@ -9,6 +9,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -455,6 +460,7 @@ private fun AllFilesSection(vm: MainViewModel) {
 
 @Composable
 private fun DisplayPage(vm: MainViewModel, s: AppSettings) {
+    val context = LocalContext.current
     Section(S(R.string.appearance)) {
         Segmented(S(R.string.theme), listOf(S(R.string.auto), S(R.string.light), S(R.string.dark)), s.themeMode) { vm.set(Keys.themeMode, it) }
         // ダイナミックカラーは Android 12 から
@@ -465,6 +471,10 @@ private fun DisplayPage(vm: MainViewModel, s: AppSettings) {
             ThemeColorPicker(s.themeColor) { vm.set(Keys.themeColor, it) }
         }
         TextColorPicker(s.textColor) { vm.set(Keys.textColor, it) }
+        LauncherIconPicker(s.launcherIcon) { selected ->
+            LauncherIconManager.request(context, selected)
+            vm.set(Keys.launcherIcon, selected)
+        }
         SwitchRow(
             S(R.string.show_artwork_in_lists),
             S(R.string.turn_off_to_skip_loading),
@@ -487,6 +497,72 @@ private fun DisplayPage(vm: MainViewModel, s: AppSettings) {
         )
     }
     LanguageSection()
+}
+
+
+@Composable
+private fun LauncherIconPicker(selectedId: String, onSelected: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val selected = LauncherIconManager.options.firstOrNull { it.id == selectedId }
+        ?: LauncherIconManager.options.first()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(S(R.string.app_icon), style = MaterialTheme.typography.titleSmall)
+        Card(Modifier.fillMaxWidth().clickable { open = true }) {
+            Row(
+                Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Image(
+                    painterResource(selected.preview),
+                    contentDescription = selected.title,
+                    modifier = Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(selected.title, style = MaterialTheme.typography.bodyLarge)
+                    Text(S(R.string.app_icon_description), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+            }
+        }
+    }
+    if (open) AlertDialog(
+        onDismissRequest = { open = false },
+        title = { Text(S(R.string.app_icon)) },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().height(420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LauncherIconManager.options.forEach { option ->
+                    val chosen = option.id == selected.id
+                    Card(
+                        Modifier.fillMaxWidth().clickable {
+                            onSelected(option.id)
+                            open = false
+                        },
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Image(
+                                painterResource(option.preview), option.title,
+                                Modifier.size(52.dp).clip(RoundedCornerShape(13.dp)),
+                                contentScale = ContentScale.Crop,
+                            )
+                            Text(option.title, Modifier.weight(1f))
+                            if (chosen) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton({ open = false }) { Text(S(R.string.close)) } },
+    )
 }
 
 /** 再生画面の設定(アンビエントモード・ほかの音楽アプリ) */

@@ -1013,4 +1013,6 @@
     <string name="dsre_completed">変換が完了しました。</string>
     <string name="dsre_cancelled">変換をキャンセルしました。</string>
     <string name="dsre_ready">変換できます。「変換を開始」を選び、出力ファイルを指定してください。</string>
+    <string name="app_icon">アプリアイコン</string>
+    <string name="app_icon_description">ランチャーに表示するアイコンを選択します。ホーム画面への反映には少し時間がかかる場合があります。</string>
 </resources>

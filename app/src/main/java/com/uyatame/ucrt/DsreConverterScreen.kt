@@ -14,6 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.rememberCoroutineScope
 import com.uyatame.ucrt.dsre.DsreFileConverter
 import com.uyatame.ucrt.dsre.DsreParameters
+import com.uyatame.ucrt.data.AppSettings
+import com.uyatame.ucrt.data.Keys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,18 +42,18 @@ private fun presetValues(p:DsrePreset)=when(p){
     DsrePreset.CUSTOM->DsreValues(15,.47f,48000,.98f,1.11f,.04f)
 }
 
-@Composable fun DsreConverterScreen(){
+@Composable fun DsreConverterScreen(vm: MainViewModel, settings: AppSettings){
     val ctx=LocalContext.current
     var uriText by rememberSaveable{mutableStateOf<String?>(null)}
     var fileName by rememberSaveable{mutableStateOf<String?>(null)}
-    var preset by rememberSaveable{mutableStateOf(DsrePreset.NATURAL.name)}
-    var harmonic by rememberSaveable{mutableFloatStateOf(13f / 23f)}
-    var strength by rememberSaveable{mutableFloatStateOf(.5f)}
-    var rate by rememberSaveable{mutableIntStateOf(48000)}
-    var width by rememberSaveable{mutableFloatStateOf(.48f)}
-    var dynamic by rememberSaveable{mutableFloatStateOf(.20f)}
-    var context by rememberSaveable{mutableFloatStateOf(.40f)}
-    var format by rememberSaveable{mutableStateOf(DsreOutputFormat.WAV.name)}
+    var preset by rememberSaveable(settings.dsrePreset){mutableStateOf(settings.dsrePreset)}
+    var harmonic by rememberSaveable(settings.dsreHarmonic){mutableFloatStateOf(settings.dsreHarmonic)}
+    var strength by rememberSaveable(settings.dsreStrength){mutableFloatStateOf(settings.dsreStrength)}
+    var rate by rememberSaveable(settings.dsreRate){mutableIntStateOf(settings.dsreRate)}
+    var width by rememberSaveable(settings.dsreWidth){mutableFloatStateOf(settings.dsreWidth)}
+    var dynamic by rememberSaveable(settings.dsreDynamic){mutableFloatStateOf(settings.dsreDynamic)}
+    var context by rememberSaveable(settings.dsreContext){mutableFloatStateOf(settings.dsreContext)}
+    var format by rememberSaveable(settings.dsreFormat){mutableStateOf(settings.dsreFormat)}
     var converting by rememberSaveable { mutableStateOf(false) }
     var progress by rememberSaveable { mutableFloatStateOf(0f) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
@@ -96,8 +98,12 @@ private fun presetValues(p:DsrePreset)=when(p){
         width = (v.width - 0.50f).coerceIn(0f, 1f)
         dynamic = ((v.dynamic - 1.00f) / 0.50f).coerceIn(0f, 1f)
         context = (v.context / 0.10f).coerceIn(0f, 1f)
+        vm.set(Keys.dsrePreset, preset)
+        vm.set(Keys.dsreHarmonic, harmonic); vm.set(Keys.dsreStrength, strength)
+        vm.set(Keys.dsreRate, rate); vm.set(Keys.dsreWidth, width)
+        vm.set(Keys.dsreDynamic, dynamic); vm.set(Keys.dsreContext, context)
     }
-    fun custom(){preset=DsrePreset.CUSTOM.name}
+    fun custom(){ if (preset != DsrePreset.CUSTOM.name) { preset=DsrePreset.CUSTOM.name; vm.set(Keys.dsrePreset, preset) } }
     WideCenter { Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
         Text(S(R.string.dsre_title),style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Bold)
         Text(S(R.string.dsre_description),color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -109,13 +115,13 @@ private fun presetValues(p:DsrePreset)=when(p){
         Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
             Text(S(R.string.dsre_settings),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
             ChoiceField(S(R.string.dsre_preset),DsrePreset.valueOf(preset),DsrePreset.entries,{S(it.titleRes)}){usePreset(it)}
-            NormalizedSlider(S(R.string.dsre_harmonic), harmonic) { harmonic = it; custom() }
-            NormalizedSlider(S(R.string.dsre_strength), strength) { strength = it; custom() }
-            ChoiceField(S(R.string.dsre_sample_rate),rate,listOf(44100,48000,88200,96000,192000),{"$it Hz"}){rate=it;custom()}
-            NormalizedSlider(S(R.string.dsre_stereo_width), width) { width = it; custom() }
-            NormalizedSlider(S(R.string.dsre_dynamic), dynamic) { dynamic = it; custom() }
-            NormalizedSlider(S(R.string.dsre_context), context) { context = it; custom() }
-            HorizontalDivider();ChoiceField(S(R.string.dsre_output_format),DsreOutputFormat.valueOf(format),DsreOutputFormat.entries,{it.name}){format=it.name}
+            NormalizedSlider(S(R.string.dsre_harmonic), harmonic) { harmonic = it; custom(); vm.set(Keys.dsreHarmonic, it) }
+            NormalizedSlider(S(R.string.dsre_strength), strength) { strength = it; custom(); vm.set(Keys.dsreStrength, it) }
+            ChoiceField(S(R.string.dsre_sample_rate),rate,listOf(44100,48000,88200,96000,192000),{"$it Hz"}){rate=it;custom();vm.set(Keys.dsreRate,it)}
+            NormalizedSlider(S(R.string.dsre_stereo_width), width) { width = it; custom(); vm.set(Keys.dsreWidth, it) }
+            NormalizedSlider(S(R.string.dsre_dynamic), dynamic) { dynamic = it; custom(); vm.set(Keys.dsreDynamic, it) }
+            NormalizedSlider(S(R.string.dsre_context), context) { context = it; custom(); vm.set(Keys.dsreContext, it) }
+            HorizontalDivider();ChoiceField(S(R.string.dsre_output_format),DsreOutputFormat.valueOf(format),DsreOutputFormat.entries,{it.name}){format=it.name;vm.set(Keys.dsreFormat,it.name)}
         }}
         Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             Text(S(R.string.dsre_conversion),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)

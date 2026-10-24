@@ -1017,4 +1017,6 @@
     <string name="dsre_completed">Conversion completed.</string>
     <string name="dsre_cancelled">Conversion was cancelled.</string>
     <string name="dsre_ready">Ready to convert. Choose Start conversion and select the output file.</string>
+    <string name="app_icon">App icon</string>
+    <string name="app_icon_description">Choose a launcher icon. The home screen may take a moment to refresh.</string>
 </resources>

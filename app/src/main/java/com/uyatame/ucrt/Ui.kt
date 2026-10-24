@@ -305,7 +305,7 @@ fun App(vm: MainViewModel) {
                         0 -> LibraryScreen(vm, s)
                         1 -> CdScreen(vm, s) { tab = 2; settingsPage = 0 }
                         TAB_STREAMING -> StreamingScreen(vm, sp, s, spotifyOpen, { spotifyOpen = it }) { showSpotifyPlayer = true }
-                        TAB_DSRE -> DsreConverterScreen()
+                        TAB_DSRE -> DsreConverterScreen(vm, s)
                         else -> SettingsScreen(vm, s, settingsPage) { settingsPage = it }
                     }
                 }

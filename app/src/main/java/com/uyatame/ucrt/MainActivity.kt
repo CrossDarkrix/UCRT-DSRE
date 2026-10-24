@@ -39,6 +39,13 @@ class MainActivity : ComponentActivity() {
         setContent { App(vm) }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // ランチャーエイリアスの変更は、前面のActivityが閉じるように見える端末があるため、
+        // UCRTがバックグラウンドへ移った後に適用する。
+        LauncherIconManager.applyPending(applicationContext)
+    }
+
     /** 隠したナビゲーションバーは、ほかのアプリやダイアログから戻ると出てしまうことがあるので、かけ直す */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)

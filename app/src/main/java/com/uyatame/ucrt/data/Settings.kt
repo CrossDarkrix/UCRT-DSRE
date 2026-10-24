@@ -150,6 +150,17 @@ data class AppSettings(
     val darDsd: Int = 0,
     /** DAR の PCM アップサンプリングを整数倍だけで行う(通常の出力で、整数倍にできない出力先なら仕方なく合わせる) */
     val darInteger: Boolean = true,
+    /** DSRE offline converter settings. Slider values are normalized to 0.0..1.0. */
+    val dsrePreset: String = "NATURAL",
+    val dsreHarmonic: Float = 13f / 23f,
+    val dsreStrength: Float = 0.5f,
+    val dsreRate: Int = 48000,
+    val dsreWidth: Float = 0.48f,
+    val dsreDynamic: Float = 0.20f,
+    val dsreContext: Float = 0.40f,
+    val dsreFormat: String = "WAV",
+    /** Selected launcher activity alias. */
+    val launcherIcon: String = "default",
 )
 
 /** イコライザーの帯域(保存されていなければ、以前の 10 バンドの設定から作る) */
@@ -264,6 +275,15 @@ object Keys {
     val darPcm = intPreferencesKey("darPcm")
     val darDsd = intPreferencesKey("darDsd")
     val darInteger = booleanPreferencesKey("darInteger")
+    val dsrePreset = stringPreferencesKey("dsrePreset")
+    val dsreHarmonic = androidx.datastore.preferences.core.floatPreferencesKey("dsreHarmonic")
+    val dsreStrength = androidx.datastore.preferences.core.floatPreferencesKey("dsreStrength")
+    val dsreRate = intPreferencesKey("dsreRate")
+    val dsreWidth = androidx.datastore.preferences.core.floatPreferencesKey("dsreWidth")
+    val dsreDynamic = androidx.datastore.preferences.core.floatPreferencesKey("dsreDynamic")
+    val dsreContext = androidx.datastore.preferences.core.floatPreferencesKey("dsreContext")
+    val dsreFormat = stringPreferencesKey("dsreFormat")
+    val launcherIcon = stringPreferencesKey("launcherIcon")
 }
 
 class SettingsRepository(private val context: Context) {
@@ -344,6 +364,15 @@ class SettingsRepository(private val context: Context) {
             darPcm = p[Keys.darPcm] ?: d.darPcm,
             darDsd = p[Keys.darDsd] ?: d.darDsd,
             darInteger = p[Keys.darInteger] ?: d.darInteger,
+            dsrePreset = p[Keys.dsrePreset] ?: d.dsrePreset,
+            dsreHarmonic = (p[Keys.dsreHarmonic] ?: d.dsreHarmonic).coerceIn(0f, 1f),
+            dsreStrength = (p[Keys.dsreStrength] ?: d.dsreStrength).coerceIn(0f, 1f),
+            dsreRate = p[Keys.dsreRate] ?: d.dsreRate,
+            dsreWidth = (p[Keys.dsreWidth] ?: d.dsreWidth).coerceIn(0f, 1f),
+            dsreDynamic = (p[Keys.dsreDynamic] ?: d.dsreDynamic).coerceIn(0f, 1f),
+            dsreContext = (p[Keys.dsreContext] ?: d.dsreContext).coerceIn(0f, 1f),
+            dsreFormat = p[Keys.dsreFormat] ?: d.dsreFormat,
+            launcherIcon = p[Keys.launcherIcon] ?: d.launcherIcon,
         )
     }
 
