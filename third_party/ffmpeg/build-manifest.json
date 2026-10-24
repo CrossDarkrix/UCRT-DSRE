@@ -1,0 +1,67 @@
+{
+  "ffmpegVersion": "9.0.2",
+  "lameVersion": "3.100",
+  "minSdk": 23,
+  "licenseProfile": "LGPL-oriented; no GPL/nonfree options. LAME is LGPL and statically linked into shared libavcodec.so.",
+  "enabledOutputEncoders": [
+    "alac",
+    "flac",
+    "aac",
+    "libmp3lame",
+    "pcm"
+  ],
+  "abis": [
+    {
+      "abi": "arm64-v8a",
+      "libraries": [
+        {
+          "file": "libavutil.so",
+          "sha256": "a8cac6ee1b25869b6faf3793a3820d712ebe589397866b77221ea469fb46f698",
+          "bytes": 555792
+        },
+        {
+          "file": "libswresample.so",
+          "sha256": "65e194f43c17d752a8f25083042a9c7cc8e31a1aec8f4f6a3b99d002b2dc812b",
+          "bytes": 73784
+        },
+        {
+          "file": "libavcodec.so",
+          "sha256": "7169bf816576589496a95890caa3bdb8e722386d71702172d0a34372b4687172",
+          "bytes": 988840
+        },
+        {
+          "file": "libavformat.so",
+          "sha256": "29cc4b167f08cd74436cc877a3e17b3dc427bc143db9a52d39fd71043990a314",
+          "bytes": 684280
+        }
+      ],
+      "mp3Encoder": "libmp3lame (statically linked into libavcodec.so)"
+    },
+    {
+      "abi": "armeabi-v7a",
+      "libraries": [
+        {
+          "file": "libavutil.so",
+          "sha256": "0447d01d1991afa5b22a2ccd7ec4885a3da4ed656aae29b35fb75b6edab045c4",
+          "bytes": 366352
+        },
+        {
+          "file": "libswresample.so",
+          "sha256": "7fcb61c58456c5c71fd8b0c56de97a95d4ed0101ead2ae93070ade69f7ee2f2c",
+          "bytes": 58416
+        },
+        {
+          "file": "libavcodec.so",
+          "sha256": "23128d4b159f8a7dd988a74515b2b47b690f9b37251c9852f2fc852f7d1eac99",
+          "bytes": 800440
+        },
+        {
+          "file": "libavformat.so",
+          "sha256": "7ea7334af7297054025f2bc212255ca58a1b74ea53a75c2367b0ad6f17010c51",
+          "bytes": 499488
+        }
+      ],
+      "mp3Encoder": "libmp3lame (statically linked into libavcodec.so)"
+    }
+  ]
+}

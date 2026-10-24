@@ -245,6 +245,7 @@ fun App(vm: MainViewModel) {
             Triple(AppIcons.Library, S(R.string.library), 0),
             Triple(AppIcons.Album, S(R.string.disc), 1),
             Triple(AppIcons.Cloud, S(R.string.streaming), TAB_STREAMING),
+            Triple(AppIcons.Tune, S(R.string.dsre_tab), TAB_DSRE),
             Triple(Icons.Filled.Settings, S(R.string.settings), 2),
         )
         CompositionLocalProvider(LocalTablet provides tablet, LocalShowArt provides s.listArt, LocalTrackArt provides s.trackArt) {
@@ -304,6 +305,7 @@ fun App(vm: MainViewModel) {
                         0 -> LibraryScreen(vm, s)
                         1 -> CdScreen(vm, s) { tab = 2; settingsPage = 0 }
                         TAB_STREAMING -> StreamingScreen(vm, sp, s, spotifyOpen, { spotifyOpen = it }) { showSpotifyPlayer = true }
+                        TAB_DSRE -> DsreConverterScreen()
                         else -> SettingsScreen(vm, s, settingsPage) { settingsPage = it }
                     }
                 }
