@@ -23,17 +23,7 @@ def setupLocalProperty():
         f.write("sdk.dir={}/android-sdk\nndk.dir={}/android-ndk".format(os.getenv("HOME"), os.getenv("HOME")))
 
 def runGradle():
-    return subprocess.run("gradle assembleRelease --no-daemon", shell=True)
-
-def startComplete():
-    while True:
-        if os.path.exists(firstOutput):
-            shutil.copy(firstOutput, outAPK)
-            print("Work Complete!\noutput={}".format(outAPK))
-            subprocess.run("termux-open >/dev/null && termux-open {}".format(outAPK), shell=True)
-            break
-        else:
-            time.sleep(0.89)
+    return subprocess.run("gradle assembleRelease --no-daemon", shell=True, stdout=subprocess.DEVNULL)
 
 def main():
     try:
@@ -42,8 +32,11 @@ def main():
         pass
     setupGradle()
     setupLocalProperty()
-    threading.Thread(target=startComplete, daemon=True).start()
+    print('Please Wait!\nBuild APK.................')
     runGradle()
+    shutil.copy(firstOutput, outAPK)
+    print("Work Complete!\noutput={}".format(outAPK))
+    subprocess.run("termux-open >/dev/null && termux-open {}".format(outAPK), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if __name__ == '__main__':
     main()
