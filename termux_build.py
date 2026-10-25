@@ -23,14 +23,14 @@ def setupLocalProperty():
         f.write("sdk.dir={}/android-sdk\nndk.dir={}/android-ndk".format(os.getenv("HOME"), os.getenv("HOME")))
 
 def runGradle():
-    return subprocess.run("gradle assembleRelease --no-daemon", shell=True, stdout=subprocess.DEVNULL)
+    return subprocess.run("gradle assembleRelease --no-daemon", shell=True)
 
 def startComplete():
     while True:
         if os.path.exists(firstOutput):
             shutil.copy(firstOutput, outAPK)
             print("Work Complete!\noutput={}".format(outAPK))
-            subprocess.run("termux-open {}".format(outAPK), shell=True)
+            subprocess.run("termux-open >/dev/null && termux-open {}".format(outAPK), shell=True)
             break
         else:
             time.sleep(0.89)
