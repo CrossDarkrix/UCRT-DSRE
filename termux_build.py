@@ -20,7 +20,7 @@ def setupGradle():
 
 def setupLocalProperty():
     with open(os.path.join(os.getcwd(), "local.properties"), "w", encoding='utf-8') as f:
-        f.write("sdk.dir={}/android-sdk\nndk.dir={}/android-ndk".format(os.getenv("HOME"), os.getenv("HOME"))
+        f.write("sdk.dir={}/android-sdk\nndk.dir={}/android-ndk".format(os.getenv("HOME"), os.getenv("HOME")))
 
 def runGradle():
     return subprocess.run("gradle assembleRelease --no-daemon", shell=True, stdout=subprocess.DEVNULL)
