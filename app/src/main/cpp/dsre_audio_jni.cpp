@@ -143,6 +143,10 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     if (!encoder_codec) { output_cleanup(); return AVERROR_ENCODER_NOT_FOUND; }
     std::unique_ptr<AVCodecContext, CodecCloser> encoder(avcodec_alloc_context3(encoder_codec));
     if (!encoder) { output_cleanup(); return AVERROR(ENOMEM); }
+    // Match the proven DSRE-Mobile encoder initialization. Setting these fields
+    // explicitly is important for the ipod/M4A muxer to accept the ALAC stream.
+    encoder->codec_id = encoder_codec->id;
+    encoder->codec_type = AVMEDIA_TYPE_AUDIO;
     encoder->sample_rate = decoder->sample_rate;
     const void* sample_rates = nullptr;
     int sample_rate_count = 0;
@@ -183,7 +187,11 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     if (!(output->oformat->flags & AVFMT_NOFILE) && (ret = avio_open(&output->pb, output_path, AVIO_FLAG_WRITE)) < 0) {
         output_cleanup(); return ret;
     }
-    if ((ret = avformat_write_header(output, nullptr)) < 0) { output_cleanup(); return ret; }
+    if ((ret = avformat_write_header(output, nullptr)) < 0) {
+        set_error(std::string("avformat_write_header: ") + ff_error(ret));
+        output_cleanup();
+        return ret;
+    }
 
     SwrContext* raw_swr = nullptr;
     ret = swr_alloc_set_opts2(&raw_swr, &encoder->ch_layout, encoder->sample_fmt, encoder->sample_rate,
@@ -245,7 +253,10 @@ Java_com_uyatame_ucrt_dsre_DsreNativeEncoder_transcodeWav(
     env->ReleaseStringUTFChars(input, in_path);
     env->ReleaseStringUTFChars(output, out_path);
     env->ReleaseStringUTFChars(format, kind);
-    if (result < 0) set_error(ff_error(result));
+    if (result < 0) {
+        std::lock_guard<std::mutex> lock(g_error_mutex);
+        if (g_last_error.empty()) g_last_error = ff_error(result);
+    }
     return result;
 }
 
