@@ -106,6 +106,29 @@ int encode_fifo(AVAudioFifo* fifo, AVCodecContext* encoder, AVFormatContext* out
     return 0;
 }
 
+struct OutputSpec {
+    AVCodecID codec_id;
+    const char* encoder_name;
+    const char* muxer_name;
+    int64_t bit_rate;
+};
+
+bool output_spec(const std::string& format, OutputSpec& spec) {
+    if (format == "ALAC" || format == "M4A") {
+        spec = {AV_CODEC_ID_ALAC, "alac", "ipod", 0};
+        return true;
+    }
+    if (format == "FLAC") {
+        spec = {AV_CODEC_ID_FLAC, "flac", "flac", 0};
+        return true;
+    }
+    if (format == "MP3") {
+        spec = {AV_CODEC_ID_MP3, "libmp3lame", "mp3", 320000};
+        return true;
+    }
+    return false;
+}
+
 int transcode(const char* input_path, const char* output_path, const char* format_name) {
     g_cancelled = false;
     AVFormatContext* raw_input = nullptr;
@@ -123,72 +146,101 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     if ((ret = avcodec_parameters_to_context(decoder.get(), input_stream->codecpar)) < 0) return ret;
     if ((ret = avcodec_open2(decoder.get(), decoder_codec, nullptr)) < 0) return ret;
 
-    const std::string format(format_name);
-    const bool alac = format == "ALAC";
-    const bool flac = format == "FLAC";
-    const bool mp3 = format == "MP3";
-    if (!alac && !flac && !mp3) return AVERROR(EINVAL);
-    const char* muxer_name = alac ? "ipod" : (mp3 ? "mp3" : "flac");
-    const char* encoder_name = alac ? "alac" : (mp3 ? "libmp3lame" : "flac");
+    const std::string format(format_name ? format_name : "");
+    OutputSpec spec{};
+    if (!output_spec(format, spec)) {
+        set_error("Unsupported output format: " + format);
+        return AVERROR(EINVAL);
+    }
     AVFormatContext* output = nullptr;
-    if ((ret = avformat_alloc_output_context2(&output, nullptr, muxer_name, output_path)) < 0 || !output)
+    if ((ret = avformat_alloc_output_context2(&output, nullptr, spec.muxer_name, output_path)) < 0 || !output) {
+        set_error("avformat_alloc_output_context2: " + ff_error(ret < 0 ? ret : AVERROR_UNKNOWN));
         return ret < 0 ? ret : AVERROR_UNKNOWN;
+    }
     auto output_cleanup = [&]() {
         if (output) {
             if (!(output->oformat->flags & AVFMT_NOFILE) && output->pb) avio_closep(&output->pb);
             avformat_free_context(output);
         }
     };
-    const AVCodec* encoder_codec = avcodec_find_encoder_by_name(encoder_name);
-    if (!encoder_codec) { output_cleanup(); return AVERROR_ENCODER_NOT_FOUND; }
+    const AVCodec* encoder_codec = avcodec_find_encoder_by_name(spec.encoder_name);
+    if (!encoder_codec) encoder_codec = avcodec_find_encoder(spec.codec_id);
+    if (!encoder_codec) {
+        set_error("Encoder not found for format: " + format);
+        output_cleanup();
+        return AVERROR_ENCODER_NOT_FOUND;
+    }
     std::unique_ptr<AVCodecContext, CodecCloser> encoder(avcodec_alloc_context3(encoder_codec));
     if (!encoder) { output_cleanup(); return AVERROR(ENOMEM); }
     // Match the proven DSRE-Mobile encoder initialization. Setting these fields
     // explicitly is important for the ipod/M4A muxer to accept the ALAC stream.
-    encoder->codec_id = encoder_codec->id;
+    encoder->codec_id = spec.codec_id;
     encoder->codec_type = AVMEDIA_TYPE_AUDIO;
     encoder->sample_rate = decoder->sample_rate;
-    const void* sample_rates = nullptr;
-    int sample_rate_count = 0;
-    ret = avcodec_get_supported_config(nullptr, encoder_codec, AV_CODEC_CONFIG_SAMPLE_RATE,
-                                       0, &sample_rates, &sample_rate_count);
-    if (ret < 0) { output_cleanup(); return ret; }
-    if (sample_rate_count > 0) {
-        const int* rates = static_cast<const int*>(sample_rates);
-        int selected = rates[0];
-        int best_distance = std::abs(selected - decoder->sample_rate);
-        for (int i = 1; i < sample_rate_count; ++i) {
-            const int distance = std::abs(rates[i] - decoder->sample_rate);
-            if (distance < best_distance) {
-                selected = rates[i];
-                best_distance = distance;
-            }
-        }
-        encoder->sample_rate = selected;
-    }
-    if (mp3) encoder->bit_rate = 320000;
-    const void* sample_formats = nullptr;
+    encoder->bit_rate = spec.bit_rate;
+
+    // FFmpeg 9 removed AVCodec::sample_fmts. Query the public supported-config
+    // API with this encoder context, as required by the current API.
+    const void* sample_formats_config = nullptr;
     int sample_format_count = 0;
-    ret = avcodec_get_supported_config(nullptr, encoder_codec, AV_CODEC_CONFIG_SAMPLE_FORMAT,
-                                       0, &sample_formats, &sample_format_count);
-    if (ret < 0) { output_cleanup(); return ret; }
-    encoder->sample_fmt = sample_format_count > 0
-        ? static_cast<const AVSampleFormat*>(sample_formats)[0]
-        : AV_SAMPLE_FMT_S16;
+    ret = avcodec_get_supported_config(
+        encoder.get(),
+        encoder_codec,
+        AV_CODEC_CONFIG_SAMPLE_FORMAT,
+        0,
+        &sample_formats_config,
+        &sample_format_count
+    );
+    if (ret < 0) {
+        set_error(std::string("avcodec_get_supported_config (") + format + "): " + ff_error(ret));
+        output_cleanup();
+        return ret;
+    }
+    const auto* sample_formats = static_cast<const AVSampleFormat*>(sample_formats_config);
+    if (!sample_formats || sample_format_count <= 0) {
+        set_error("Encoder reports no supported sample format for: " + format);
+        output_cleanup();
+        return AVERROR(EINVAL);
+    }
+    encoder->sample_fmt = sample_formats[0];
+    const AVSampleFormat preferred[] = {
+        AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_FLT,
+        AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S32,
+        AV_SAMPLE_FMT_S16P, AV_SAMPLE_FMT_S16,
+    };
+    for (AVSampleFormat wanted : preferred) {
+        if (std::find(sample_formats, sample_formats + sample_format_count, wanted)
+                != sample_formats + sample_format_count) {
+            encoder->sample_fmt = wanted;
+            break;
+        }
+    }
     ret = av_channel_layout_copy(&encoder->ch_layout, &decoder->ch_layout);
-    if (ret < 0) { output_cleanup(); return ret; }
+    if (ret < 0) { set_error("av_channel_layout_copy: " + ff_error(ret)); output_cleanup(); return ret; }
     encoder->time_base = AVRational{1, encoder->sample_rate};
     if (output->oformat->flags & AVFMT_GLOBALHEADER) encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    if ((ret = avcodec_open2(encoder.get(), encoder_codec, nullptr)) < 0) { output_cleanup(); return ret; }
+    if ((ret = avcodec_open2(encoder.get(), encoder_codec, nullptr)) < 0) {
+        set_error(std::string("avcodec_open2 (") + format + "): " + ff_error(ret));
+        output_cleanup(); return ret;
+    }
     AVStream* output_stream = avformat_new_stream(output, nullptr);
     if (!output_stream) { output_cleanup(); return AVERROR(ENOMEM); }
     output_stream->time_base = encoder->time_base;
-    if ((ret = avcodec_parameters_from_context(output_stream->codecpar, encoder.get())) < 0) { output_cleanup(); return ret; }
-    if (!(output->oformat->flags & AVFMT_NOFILE) && (ret = avio_open(&output->pb, output_path, AVIO_FLAG_WRITE)) < 0) {
-        output_cleanup(); return ret;
+    if ((ret = avcodec_parameters_from_context(output_stream->codecpar, encoder.get())) < 0) {
+        set_error("avcodec_parameters_from_context: " + ff_error(ret)); output_cleanup(); return ret;
     }
-    if ((ret = avformat_write_header(output, nullptr)) < 0) {
-        set_error(std::string("avformat_write_header: ") + ff_error(ret));
+    if (!(output->oformat->flags & AVFMT_NOFILE) && (ret = avio_open(&output->pb, output_path, AVIO_FLAG_WRITE)) < 0) {
+        set_error("avio_open: " + ff_error(ret)); output_cleanup(); return ret;
+    }
+    AVDictionary* mux_options = nullptr;
+    if (spec.codec_id == AV_CODEC_ID_MP3) {
+        av_dict_set(&mux_options, "id3v2_version", "3", 0);
+        av_dict_set(&mux_options, "write_id3v1", "0", 0);
+    }
+    ret = avformat_write_header(output, &mux_options);
+    av_dict_free(&mux_options);
+    if (ret < 0) {
+        set_error(std::string("avformat_write_header (") + format + "): " + ff_error(ret));
         output_cleanup();
         return ret;
     }
