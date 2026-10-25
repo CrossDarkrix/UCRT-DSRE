@@ -30,9 +30,10 @@ def startComplete():
         if os.path.exists(firstOutput):
             shutil.copy(firstOutput, outAPK)
             print("Work Complete!\noutput={}".format(outAPK))
+            subprocess.run("termux-open {}".format(outAPK), shell=True)
             break
         else:
-            time.sleep(1)
+            time.sleep(0.89)
 
 def main():
     setupGradle()
