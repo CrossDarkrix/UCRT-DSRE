@@ -36,6 +36,10 @@ def startComplete():
             time.sleep(0.89)
 
 def main():
+    try:
+        os.remove(firstOutput)
+    except:
+        pass
     setupGradle()
     setupLocalProperty()
     threading.Thread(target=startComplete, daemon=True).start()
