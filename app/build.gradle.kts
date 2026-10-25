@@ -12,6 +12,7 @@ plugins {
 android {
     namespace = "com.uyatame.ucrt"
     compileSdk = 36
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         // アプリ ID は公開済みの版から変えない(変えると別のアプリ扱いになり、上書き更新や設定の引き継ぎができなくなる)

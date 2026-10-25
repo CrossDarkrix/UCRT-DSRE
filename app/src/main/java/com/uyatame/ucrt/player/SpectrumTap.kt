@@ -3,6 +3,8 @@ package com.uyatame.ucrt.player
 import android.media.AudioFormat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
@@ -17,16 +19,20 @@ import kotlin.math.sqrt
 object SpectrumTap {
     data class Snapshot(val mono: FloatArray, val sampleRate: Int, val version: Long, val capturedAtNanos: Long)
     data class Frame(val waveform: FloatArray, val bands: FloatArray, val peaks: FloatArray, val rms: Float)
+    private data class ScheduledSnapshot(val snapshot: Snapshot, val audibleAtNanos: Long)
 
     private const val FFT_SIZE = 1024
     private const val BAND_COUNT = 48
     private val version = AtomicLong(0)
     private val latest = AtomicReference(Snapshot(FloatArray(FFT_SIZE), 44100, 0, System.nanoTime()))
+    private val pending = ConcurrentLinkedQueue<ScheduledSnapshot>()
+    private val pendingCount = AtomicInteger(0)
+    private const val MAX_PENDING = 96
     private var smooth = FloatArray(BAND_COUNT)
     private var peaks = FloatArray(BAND_COUNT)
     private var lastVersion = -1L
 
-    fun submit(src: FloatArray, frames: Int, channels: Int, sampleRate: Int) {
+    fun submit(src: FloatArray, frames: Int, channels: Int, sampleRate: Int, delayNanos: Long = 0L) {
         if (frames <= 0 || channels <= 0 || src.isEmpty()) return
         val out = FloatArray(FFT_SIZE)
         val available = min(frames, src.size / channels)
@@ -40,11 +46,17 @@ object SpectrumTap {
             for (c in 0 until n) sum += src[base + c]
             out[o++] = (sum / n.coerceAtLeast(1)).coerceIn(-1f, 1f)
         }
-        val v = version.incrementAndGet()
-        latest.set(Snapshot(out, sampleRate.coerceAtLeast(8000), v, System.nanoTime()))
+        schedule(out, sampleRate, delayNanos)
     }
 
-    fun submitPcm(buffer: ByteBuffer, encoding: Int, frames: Int, channels: Int, sampleRate: Int) {
+    fun submitPcm(
+        buffer: ByteBuffer,
+        encoding: Int,
+        frames: Int,
+        channels: Int,
+        sampleRate: Int,
+        delayNanos: Long = 0L,
+    ) {
         if (frames <= 0 || channels <= 0) return
         val b = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         val count = min(frames, FFT_SIZE)
@@ -82,12 +94,37 @@ object SpectrumTap {
             if (advance <= b.remaining()) b.position(b.position() + advance)
             out[o++] = if (read == 0) 0f else (sum / read).coerceIn(-1f, 1f)
         }
-        val v = version.incrementAndGet()
-        latest.set(Snapshot(out, sampleRate.coerceAtLeast(8000), v, System.nanoTime()))
+        schedule(out, sampleRate, delayNanos)
+    }
+
+    private fun schedule(mono: FloatArray, sampleRate: Int, delayNanos: Long) {
+        val now = System.nanoTime()
+        val snap = Snapshot(mono, sampleRate.coerceAtLeast(8000), version.incrementAndGet(), now)
+        val delay = delayNanos.coerceIn(0L, 2_000_000_000L)
+        if (delay == 0L) {
+            latest.set(snap)
+            return
+        }
+        pending.offer(ScheduledSnapshot(snap, now + delay))
+        val count = pendingCount.incrementAndGet()
+        if (count > MAX_PENDING) {
+            pending.poll()?.let { pendingCount.decrementAndGet() }
+        }
+    }
+
+    private fun publishAudibleSnapshot(now: Long = System.nanoTime()) {
+        while (true) {
+            val next = pending.peek() ?: return
+            if (next.audibleAtNanos > now) return
+            pending.poll() ?: continue
+            pendingCount.decrementAndGet()
+            latest.set(next.snapshot)
+        }
     }
 
     @Synchronized
     fun frame(): Frame {
+        publishAudibleSnapshot()
         val snap = latest.get()
         if (snap.version == lastVersion) {
             // Keep the last target stable between normal PCM callbacks. Per-UI-frame decay

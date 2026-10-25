@@ -817,15 +817,20 @@ class AudioOutput(
         val frames = src.remaining() / frameBytes
         val samples = frames * channels
         if (samples <= 0) return
-        // Feed a duplicate buffer to the visualizer before any output path consumes src.
-        // Analysis is lock-free and never blocks playback.
-        SpectrumTap.submitPcm(src, srcEnc, frames, channels, sampleRate)
+        // Preserve source PCM. USB visualization is published only when this block is
+        // expected to reach the DAC playhead, rather than when it enters the ring buffer.
+        val spectrumSource = src.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         framesWritten += frames
         val d = dac
         if (d != null) {
             writeUsb(d, src, srcEnc, frames, stop)
+            val queuedSourceFrames = (framesWritten - headFrames()).coerceAtLeast(0L)
+            val delayNanos = queuedSourceFrames * 1_000_000_000L / sampleRate.coerceAtLeast(1)
+            SpectrumTap.submitPcm(spectrumSource, srcEnc, frames, channels, sampleRate, delayNanos)
             return
         }
+        // Android AudioTrack keeps its existing behavior; the reported lead concerned USB DAC direct output.
+        SpectrumTap.submitPcm(spectrumSource, srcEnc, frames, channels, sampleRate)
         val t = track ?: return
         // 通常の出力: float に変換し、イコライザーと音量を通す
         if (fbuf.size < samples) fbuf = FloatArray(samples)
