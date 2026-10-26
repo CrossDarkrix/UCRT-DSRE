@@ -488,6 +488,70 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     output_cleanup();
     return ret;
 }
+
+void set_tag(AVDictionary** dictionary, const char* key, const char* value) {
+    av_dict_set(dictionary, key, value && *value ? value : nullptr, 0);
+}
+
+int remux_metadata_file(const char* input_path, const char* output_path,
+                        const std::vector<std::pair<std::string,std::string>>& tags,
+                        const char* cover_mode, const char* cover_path) {
+    AVFormatContext* raw_input=nullptr;
+    int ret=avformat_open_input(&raw_input,input_path,nullptr,nullptr);
+    if(ret<0)return ret;
+    std::unique_ptr<AVFormatContext,InputCloser> input(raw_input);
+    if((ret=avformat_find_stream_info(input.get(),nullptr))<0)return ret;
+    AVFormatContext* output=nullptr;
+    if((ret=avformat_alloc_output_context2(&output,nullptr,nullptr,output_path))<0||!output)return ret<0?ret:AVERROR(EINVAL);
+    auto cleanup=[&](){if(output){if(!(output->oformat->flags&AVFMT_NOFILE)&&output->pb)avio_closep(&output->pb);avformat_free_context(output);output=nullptr;}};
+    av_dict_copy(&output->metadata,input->metadata,0);
+    for(const auto& tag:tags)set_tag(&output->metadata,tag.first.c_str(),tag.second.c_str());
+    const std::string mode=cover_mode?cover_mode:"KEEP";
+    std::vector<int> stream_map(input->nb_streams,-1);
+    CopiedCover cover;
+    for(unsigned i=0;i<input->nb_streams;++i){
+        AVStream* in_stream=input->streams[i];
+        const bool attached=(in_stream->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0||in_stream->attached_pic.size>0;
+        if(attached)continue;
+        AVStream* out_stream=avformat_new_stream(output,nullptr);if(!out_stream){cleanup();return AVERROR(ENOMEM);}
+        stream_map[i]=out_stream->index;
+        if((ret=avcodec_parameters_copy(out_stream->codecpar,in_stream->codecpar))<0){cleanup();return ret;}
+        out_stream->codecpar->codec_tag=0;out_stream->time_base=in_stream->time_base;
+        out_stream->disposition=in_stream->disposition;av_dict_copy(&out_stream->metadata,in_stream->metadata,0);
+        if(in_stream->codecpar->codec_type==AVMEDIA_TYPE_AUDIO)for(const auto& tag:tags)set_tag(&out_stream->metadata,tag.first.c_str(),tag.second.c_str());
+    }
+    auto add_source_cover=[&](AVStream* source)->int{
+        const std::string muxer=output->oformat&&output->oformat->name?output->oformat->name:"";
+        const bool force=muxer.find("mp3")!=std::string::npos||muxer.find("ipod")!=std::string::npos||muxer.find("mp4")!=std::string::npos||muxer.find("mov")!=std::string::npos;
+        if(!force&&avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
+            AVPacket packet{};int r=av_packet_ref(&packet,&source->attached_pic);if(r<0)return r;
+            r=attach_cover_stream(output,source,source->codecpar->codec_id,&packet,source->codecpar->width,source->codecpar->height,cover);av_packet_unref(&packet);return r;
+        }
+        AVPacket* jpeg=nullptr;int width=0,height=0;int r=convert_cover_to_mjpeg(source,&jpeg,&width,&height);if(r<0)return r;
+        r=attach_cover_stream(output,source,AV_CODEC_ID_MJPEG,jpeg,width,height,cover);av_packet_free(&jpeg);return r;
+    };
+    if(mode=="KEEP"){
+        for(unsigned i=0;i<input->nb_streams;++i){AVStream* source=input->streams[i];if(((source->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0||source->attached_pic.size>0)&&source->attached_pic.size>0){ret=add_source_cover(source);break;}}
+    }else if(mode=="REPLACE"&&cover_path&&*cover_path){
+        AVFormatContext* raw_cover=nullptr;
+        ret=avformat_open_input(&raw_cover,cover_path,nullptr,nullptr);
+        if(ret>=0&&raw_cover){std::unique_ptr<AVFormatContext,InputCloser> cover_input(raw_cover);ret=avformat_find_stream_info(cover_input.get(),nullptr);
+            if(ret>=0){int vi=av_find_best_stream(cover_input.get(),AVMEDIA_TYPE_VIDEO,-1,-1,nullptr,0);if(vi>=0){AVPacket packet{};while(av_read_frame(cover_input.get(),&packet)>=0){if(packet.stream_index==vi){AVStream fake{};fake.codecpar=cover_input->streams[vi]->codecpar;fake.metadata=cover_input->streams[vi]->metadata;fake.attached_pic=packet;fake.disposition=AV_DISPOSITION_ATTACHED_PIC;ret=add_source_cover(&fake);av_packet_unref(&packet);break;}av_packet_unref(&packet);}}else ret=vi;}}
+    }
+    if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    if(!(output->oformat->flags&AVFMT_NOFILE)&&(ret=avio_open(&output->pb,output_path,AVIO_FLAG_WRITE))<0){free_copied_cover(cover);cleanup();return ret;}
+    AVDictionary* options=nullptr;if(std::string(output->oformat->name).find("mp3")!=std::string::npos)av_dict_set(&options,"id3v2_version","3",0);
+    ret=avformat_write_header(output,&options);av_dict_free(&options);if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    AVPacket* packet=av_packet_alloc();if(!packet){free_copied_cover(cover);cleanup();return AVERROR(ENOMEM);}
+    while((ret=av_read_frame(input.get(),packet))>=0){int mapped=packet->stream_index<(int)stream_map.size()?stream_map[packet->stream_index]:-1;if(mapped<0){av_packet_unref(packet);continue;}
+        AVStream* in_stream=input->streams[packet->stream_index];AVStream* out_stream=output->streams[mapped];
+        av_packet_rescale_ts(packet,in_stream->time_base,out_stream->time_base);packet->stream_index=mapped;packet->pos=-1;
+        ret=av_interleaved_write_frame(output,packet);av_packet_unref(packet);if(ret<0)break;
+    }
+    av_packet_free(&packet);if(ret==AVERROR_EOF)ret=0;if(ret>=0)ret=av_write_trailer(output);
+    free_copied_cover(cover);cleanup();return ret;
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jint JNICALL
@@ -519,4 +583,24 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_uyatame_ucrt_dsre_DsreNativeEncoder_lastError(JNIEnv* env, jobject) {
     std::lock_guard<std::mutex> lock(g_error_mutex);
     return env->NewStringUTF(g_last_error.c_str());
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_uyatame_ucrt_dsre_DsreNativeEncoder_remuxMetadata(
+    JNIEnv* env, jobject, jstring input, jstring output,
+    jstring title, jstring artist, jstring album, jstring album_artist, jstring composer,
+    jstring genre, jstring date, jstring track, jstring disc, jstring comment,
+    jstring copyright_value, jstring lyrics, jstring cover_mode, jstring cover_path) {
+    std::vector<jstring> strings={input,output,title,artist,album,album_artist,composer,genre,date,track,disc,comment,copyright_value,lyrics,cover_mode,cover_path};
+    std::vector<const char*> values;values.reserve(strings.size());
+    for(jstring item:strings)values.push_back(env->GetStringUTFChars(item,nullptr));
+    const std::vector<std::pair<std::string,std::string>> tags={
+        {"title",values[2]},{"artist",values[3]},{"album",values[4]},{"album_artist",values[5]},
+        {"composer",values[6]},{"genre",values[7]},{"date",values[8]},{"track",values[9]},
+        {"disc",values[10]},{"comment",values[11]},{"copyright",values[12]},{"lyrics",values[13]},
+    };
+    const int result=remux_metadata_file(values[0],values[1],tags,values[14],values[15]);
+    for(size_t i=0;i<strings.size();++i)env->ReleaseStringUTFChars(strings[i],values[i]);
+    if(result<0)set_error(ff_error(result));
+    return result;
 }

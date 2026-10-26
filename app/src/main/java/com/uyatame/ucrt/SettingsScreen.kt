@@ -96,6 +96,7 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, page: Int, onPage: (Int) -
         4 -> SettingsPage(S(R.string.library), back) { LibraryFoldersPage(vm, s) }
         5 -> SettingsPage(S(R.string.display), back) { DisplayPage(vm, s) }
         9 -> SettingsPage(S(R.string.player_screen), back) { PlayerScreenPage(vm, s) }
+        10 -> SettingsPage(if (java.util.Locale.getDefault().language == "ja") "タグの編集" else "Edit tags", back) { MetadataEditorScreen() }
         6 -> LogPage(vm, s, back)
         7 -> LicensePage(vm, s, back)
         8 -> SettingsPage(SoundPage.title(SoundPage.MAIN), back) { SoundMain(vm, s) { onPage(80 + it) } }
@@ -205,6 +206,12 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
                 listOf(S(R.string.auto), S(R.string.light), S(R.string.dark))[s.themeMode.coerceIn(0, 2)] +
                     (if (AppLanguage.supported) S(R.string.separator) + languageLabel(AppLanguage.current(ctx)) else ""),
             ) { onPage(5) }
+            HorizontalDivider()
+            CategoryRow(
+                AppIcons.Lyrics,
+                if (java.util.Locale.getDefault().language == "ja") "タグの編集" else "Edit tags",
+                if (java.util.Locale.getDefault().language == "ja") "曲名・アーティスト・アルバム・カバー画像" else "Title, artist, album, and cover image",
+            ) { onPage(10) }
             HorizontalDivider()
             CategoryRow(Icons.Filled.Build, S(R.string.log), S(R.string.activity_log_for_troubleshooting)) { onPage(6) }
             HorizontalDivider()
