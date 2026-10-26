@@ -174,7 +174,12 @@ int copy_metadata_and_cover(const char* original_path, AVFormatContext* output,
         AVStream* source=original->streams[i]; if(!source||!source->codecpar)continue;
         const bool picture=(source->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0||(source->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&source->attached_pic.size>0);
         if(!picture||source->attached_pic.size<=0)continue;
-        if(avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
+        const std::string muxer_name = output->oformat && output->oformat->name ? output->oformat->name : "";
+        const bool force_mjpeg = muxer_name.find("mp3") != std::string::npos ||
+            muxer_name.find("ipod") != std::string::npos ||
+            muxer_name.find("mp4") != std::string::npos ||
+            muxer_name.find("mov") != std::string::npos;
+        if(!force_mjpeg && avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
             AVPacket direct{}; if((ret=av_packet_ref(&direct,&source->attached_pic))<0)return ret;
             ret=attach_cover_stream(output,source,source->codecpar->codec_id,&direct,source->codecpar->width,source->codecpar->height,cover);
             av_packet_unref(&direct); return ret;

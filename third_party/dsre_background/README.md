@@ -1,0 +1,3 @@
+# DSRE foreground conversion, channel parallelism, and cover normalization
+
+DSRE batches are owned by DsreConversionService instead of the Compose screen. The foreground dataSync service publishes progress through StateFlow, keeps a notification visible, supports cancellation from UI or notification, processes one file at a time, and survives tab/composition changes. Within each file, left/right multiband fixed-FFT DSP runs on a bounded two-thread executor and rejoins before stereo width, blend and safety scaling. MP3 and MP4/M4A-family outputs normalize attached covers to MJPEG; FLAC continues to preserve compatible original PNG/JPEG covers. Existing fixed 65,536-point FFT, VOCAL visualizer and delay UI remain enabled.

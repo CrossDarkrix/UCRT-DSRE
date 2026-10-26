@@ -21,7 +21,9 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import com.uyatame.ucrt.data.AppSettings
 import com.uyatame.ucrt.data.Keys
-import com.uyatame.ucrt.dsre.DsreFileConverter
+import com.uyatame.ucrt.dsre.DsreConversionCoordinator
+import com.uyatame.ucrt.dsre.DsreServiceJob
+import com.uyatame.ucrt.dsre.DsreServiceRequest
 import com.uyatame.ucrt.dsre.DsreParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -77,12 +79,11 @@ private fun presetValues(p:DsrePreset)=when(p){
     var context by rememberSaveable(settings.dsreContext){mutableFloatStateOf(settings.dsreContext)}
     var format by rememberSaveable(settings.dsreFormat){mutableStateOf(settings.dsreFormat)}
     val jobs=remember { mutableStateListOf<DsreBatchJob>() }
-    var converting by remember { mutableStateOf(false) }
-    var cancelRequested by remember { mutableStateOf(false) }
+    val serviceState by DsreConversionCoordinator.state.collectAsState()
+    val converting = serviceState.running
     var batchMessage by remember { mutableStateOf<String?>(null) }
     var batchError by remember { mutableStateOf<String?>(null) }
     val scope=rememberCoroutineScope()
-    val converter=remember { DsreFileConverter(app) }
 
     fun persistRead(uri:Uri){
         runCatching { app.contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -120,6 +121,24 @@ private fun presetValues(p:DsrePreset)=when(p){
         }
     }
 
+    LaunchedEffect(serviceState) {
+        if (serviceState.jobs.isNotEmpty()) {
+            val incoming = serviceState.jobs.map { remote ->
+                DsreBatchJob(
+                    uri = Uri.parse(remote.uri),
+                    name = remote.name,
+                    state = runCatching { DsreJobState.valueOf(remote.state) }.getOrDefault(DsreJobState.WAITING),
+                    progress = remote.progress,
+                    stage = remote.stage,
+                    error = remote.error,
+                )
+            }
+            jobs.clear()
+            jobs.addAll(incoming)
+            batchMessage = serviceState.message
+        }
+    }
+
     fun params()=DsreParameters(
         harmonicCount=(1f+harmonic.coerceIn(0f,1f)*23f).toInt(),
         strength=0.10f+strength.coerceIn(0f,1f)*0.70f,
@@ -135,38 +154,20 @@ private fun presetValues(p:DsrePreset)=when(p){
         if(dir==null||!dir.exists()||!dir.isDirectory||!dir.canWrite()){
             batchError=tr("設定した保存先へアクセスできません。保存先を選び直してください。","The saved output folder is unavailable. Select it again.");return
         }
-        val indices=jobs.indices.filter { if(retryFailed) jobs[it].state==DsreJobState.FAILED else jobs[it].state in setOf(DsreJobState.WAITING,DsreJobState.FAILED,DsreJobState.CANCELLED) }
-        if(indices.isEmpty()){batchError=tr("変換対象がありません","There are no items to convert");return}
-        val p=params();val outFormat=format
-        converting=true;cancelRequested=false;batchError=null;batchMessage=tr("一括変換を開始しました","Batch conversion started")
-        scope.launch{
-            for((order,index) in indices.withIndex()){
-                if(cancelRequested)break
-                jobs[index]=jobs[index].copy(state=DsreJobState.PROCESSING,progress=0f,stage=tr("準備中","Preparing"),error=null)
-                val result=runCatching{
-                    withContext(Dispatchers.IO){
-                        val outDir=DocumentFile.fromTreeUri(app,treeUri)?:throw IOException(tr("保存先を開けません","Unable to open output folder"))
-                        if(!outDir.canWrite())throw IOException(tr("保存先へ書き込めません","Output folder is not writable"))
-                        val output=createUniqueOutput(outDir,jobs[index].name,DsreOutputFormat.valueOf(outFormat))
-                        converter.convert(jobs[index].uri,output.uri,p,outFormat){progress->
-                            scope.launch { if(index<jobs.size&&jobs[index].state==DsreJobState.PROCESSING) jobs[index]=jobs[index].copy(progress=progress.fraction,stage=progress.stage) }
-                        }
-                    }
-                }
-                result.onSuccess{jobs[index]=jobs[index].copy(state=DsreJobState.COMPLETED,progress=1f,stage=tr("完了","Completed"))}
-                    .onFailure{e->
-                        val cancelled=cancelRequested||e is InterruptedException||e.message?.contains("cancel",true)==true
-                        jobs[index]=jobs[index].copy(state=if(cancelled)DsreJobState.CANCELLED else DsreJobState.FAILED,stage=if(cancelled)tr("キャンセル","Cancelled") else tr("失敗","Failed"),error=if(cancelled)null else(e.message?:e.javaClass.simpleName))
-                    }
-                batchMessage=tr("${order+1}/${indices.size}件を処理しました","Processed ${order+1}/${indices.size}")
-            }
-            if(cancelRequested){
-                jobs.indices.filter{jobs[it].state==DsreJobState.WAITING}.forEach{jobs[it]=jobs[it].copy(state=DsreJobState.CANCELLED,stage=tr("キャンセル","Cancelled"))}
-                batchMessage=tr("一括変換をキャンセルしました","Batch conversion cancelled")
-            }else batchMessage=tr("一括変換が終了しました","Batch conversion finished")
-            converting=false
-        }
+        val selected=jobs.filter { if(retryFailed) it.state==DsreJobState.FAILED else it.state in setOf(DsreJobState.WAITING,DsreJobState.FAILED,DsreJobState.CANCELLED) }
+        if(selected.isEmpty()){batchError=tr("変換対象がありません","There are no items to convert");return}
+        val request=DsreServiceRequest(
+            jobs=selected.map{DsreServiceJob(it.uri.toString(),it.name)},
+            outputTree=treeUri.toString(),
+            parameters=params(),
+            format=format,
+        )
+        if(DsreConversionCoordinator.start(app,request)){
+            batchError=null
+            batchMessage=tr("バックグラウンド変換を開始しました","Background conversion started")
+        }else batchError=tr("別のDSRE変換が実行中です","Another DSRE conversion is running")
     }
+
     fun saveUserPreset(nameRaw:String){
         val name=nameRaw.trim()
         if(name.isBlank()){batchError=tr("プリセット名を入力してください","Enter a preset name");return}
@@ -252,7 +253,7 @@ private fun presetValues(p:DsrePreset)=when(p){
         Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             batchMessage?.let{Text(it,color=MaterialTheme.colorScheme.onSurfaceVariant)}
             batchError?.let{Text(it,color=MaterialTheme.colorScheme.error)}
-            if(converting)Button({cancelRequested=true;converter.cancel()},Modifier.fillMaxWidth()){Text(tr("一括変換をキャンセル","Cancel batch"))}
+            if(converting)Button({DsreConversionCoordinator.cancel(app)},Modifier.fillMaxWidth()){Text(tr("一括変換をキャンセル","Cancel batch"))}
             else{
                 Button({startBatch(false)},enabled=jobs.isNotEmpty()&&outputTreeText.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text(tr("一括変換を開始","Start batch conversion"))}
                 OutlinedButton({startBatch(true)},enabled=failed>0,modifier=Modifier.fillMaxWidth()){Text(tr("失敗項目を再試行","Retry failed items"))}

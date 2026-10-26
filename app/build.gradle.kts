@@ -22,7 +22,7 @@ android {
         targetSdk = 36
         versionCode = 44
         // 次にリリースする版。テスト用のビルド(tools/termux-build.sh)では、後ろに ".test<テスト版>" が付く
-        versionName = "0.6.0" + (findProperty("testVersion")?.let { ".test$it" } ?: "")
+        versionName = "1.9.1" + (findProperty("testVersion")?.let { ".test$it" } ?: "")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }

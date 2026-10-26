@@ -7,6 +7,8 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 /** Channel-first PCM DSP port. Each channel array must contain the same frame count. */
 class DsreDspEngine(
@@ -62,7 +64,7 @@ class DsreDspEngine(
         ).filter { it.low < nyquist && it.high < nyquist && it.high > it.low }
         if (bands.isEmpty()) return Array(channels) { x[it].copyOf() }
         val scale = intensity.coerceIn(.1f,1.5f)
-        return Array(channels) { ch ->
+        fun processChannel(ch: Int): FloatArray {
             val original=x[ch]; val enhanced=FloatArray(original.size)
             for (band in bands) {
                 val filtered=bandpass(original,band.low,band.high)
@@ -72,8 +74,12 @@ class DsreDspEngine(
                 for(i in enhanced.indices) enhanced[i] += harmonic[i]*band.gain/bands.size
             }
             for(i in enhanced.indices) enhanced[i]=finite(original[i]*.78f+enhanced[i]*.22f)
-            enhanced
+            return enhanced
         }
+        if (channels == 1) return arrayOf(processChannel(0))
+        val futures = ArrayList<Future<FloatArray>>(channels)
+        for (ch in 0 until channels) futures += channelExecutor.submit<FloatArray> { processChannel(ch) }
+        return Array(channels) { ch -> futures[ch].get() }
     }
 
     private fun generateHarmonics(signal: FloatArray, fundamental: Double, count: Int, strength: Float): FloatArray {
@@ -165,6 +171,12 @@ class DsreDspEngine(
     private fun sanitize(x:FloatArray):FloatArray{val y=FloatArray(x.size){finite(x[it])};var peak=0f;for(v in y)peak=max(peak,abs(v));if(peak>1000f)for(i in y.indices)y[i]/=peak;return y}
     private fun safetyScale(x:Array<FloatArray>, limit:Float){var peak=0f;for(c in x)for(v in c)peak=max(peak,abs(v));if(peak>limit){val s=limit/peak;for(c in x)for(i in c.indices)c[i]*=s}}
     private fun finite(v:Float)=if(v.isFinite())v else 0f
+
+    private companion object {
+        val channelExecutor = Executors.newFixedThreadPool(2) { task ->
+            Thread(task, "DSRE-Channel-DSP").apply { isDaemon = true; priority = Thread.NORM_PRIORITY }
+        }
+    }
 }
 
 private object Fourier {
