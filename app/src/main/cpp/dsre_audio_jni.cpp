@@ -42,6 +42,77 @@ struct FrameCloser { void operator()(AVFrame* p) const { if (p) av_frame_free(&p
 struct SwrCloser { void operator()(SwrContext* p) const { if (p) swr_free(&p); } };
 struct FifoCloser { void operator()(AVAudioFifo* p) const { if (p) av_audio_fifo_free(p); } };
 
+struct CopiedCover {
+    AVPacket* packet = nullptr;
+    int stream_index = -1;
+};
+
+void free_copied_cover(CopiedCover& cover) {
+    if (cover.packet) av_packet_free(&cover.packet);
+    cover.stream_index = -1;
+}
+
+int copy_metadata_and_cover(const char* original_path, AVFormatContext* output,
+                            AVStream* output_audio_stream, CopiedCover& cover) {
+    if (!original_path || !*original_path || !output || !output_audio_stream) return 0;
+    AVFormatContext* raw_original = nullptr;
+    int ret = avformat_open_input(&raw_original, original_path, nullptr, nullptr);
+    if (ret < 0 || !raw_original) {
+        __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Metadata source open skipped: %s", ff_error(ret).c_str());
+        return 0;
+    }
+    std::unique_ptr<AVFormatContext, InputCloser> original(raw_original);
+    ret = avformat_find_stream_info(original.get(), nullptr);
+    if (ret < 0) {
+        __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Metadata stream info skipped: %s", ff_error(ret).c_str());
+        return 0;
+    }
+
+    av_dict_copy(&output->metadata, original->metadata, 0);
+    for (unsigned int i = 0; i < original->nb_streams; ++i) {
+        AVStream* source = original->streams[i];
+        if (!source || !source->codecpar) continue;
+        if (source->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            av_dict_copy(&output_audio_stream->metadata, source->metadata, 0);
+            break;
+        }
+    }
+
+    for (unsigned int i = 0; i < original->nb_streams; ++i) {
+        AVStream* source = original->streams[i];
+        if (!source || !source->codecpar) continue;
+        const bool picture =
+            (source->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0 ||
+            (source->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && source->attached_pic.size > 0);
+        if (!picture || source->attached_pic.size <= 0) continue;
+        if (avformat_query_codec(output->oformat, source->codecpar->codec_id, FF_COMPLIANCE_NORMAL) <= 0) {
+            __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Cover codec not supported by output muxer: %d", source->codecpar->codec_id);
+            continue;
+        }
+        AVStream* destination = avformat_new_stream(output, nullptr);
+        if (!destination) return AVERROR(ENOMEM);
+        ret = avcodec_parameters_copy(destination->codecpar, source->codecpar);
+        if (ret < 0) return ret;
+        destination->time_base = source->time_base.num && source->time_base.den
+            ? source->time_base : AVRational{1, 90000};
+        destination->disposition |= AV_DISPOSITION_ATTACHED_PIC;
+        av_dict_copy(&destination->metadata, source->metadata, 0);
+        ret = av_packet_ref(&destination->attached_pic, &source->attached_pic);
+        if (ret < 0) return ret;
+        destination->attached_pic.stream_index = destination->index;
+        destination->attached_pic.pts = 0;
+        destination->attached_pic.dts = 0;
+        destination->attached_pic.duration = 0;
+        destination->attached_pic.flags |= AV_PKT_FLAG_KEY;
+        cover.packet = av_packet_clone(&destination->attached_pic);
+        if (!cover.packet) return AVERROR(ENOMEM);
+        cover.stream_index = destination->index;
+        cover.packet->stream_index = destination->index;
+        break;
+    }
+    return 0;
+}
+
 int write_packets(AVCodecContext* encoder, AVFormatContext* output, AVStream* stream, AVPacket* packet) {
     while (true) {
         int ret = avcodec_receive_packet(encoder, packet);
@@ -129,7 +200,8 @@ bool output_spec(const std::string& format, OutputSpec& spec) {
     return false;
 }
 
-int transcode(const char* input_path, const char* output_path, const char* format_name) {
+int transcode(const char* input_path, const char* output_path, const char* format_name,
+              const char* original_path) {
     g_cancelled = false;
     AVFormatContext* raw_input = nullptr;
     int ret = avformat_open_input(&raw_input, input_path, nullptr, nullptr);
@@ -202,25 +274,59 @@ int transcode(const char* input_path, const char* output_path, const char* forma
         output_cleanup();
         return AVERROR(EINVAL);
     }
-    encoder->sample_fmt = sample_formats[0];
-    const AVSampleFormat preferred[] = {
-        AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_FLT,
-        AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S32,
-        AV_SAMPLE_FMT_S16P, AV_SAMPLE_FMT_S16,
+    auto supports_sample_format = [&](AVSampleFormat wanted) {
+        return std::find(sample_formats, sample_formats + sample_format_count, wanted)
+            != sample_formats + sample_format_count;
     };
-    for (AVSampleFormat wanted : preferred) {
-        if (std::find(sample_formats, sample_formats + sample_format_count, wanted)
-                != sample_formats + sample_format_count) {
-            encoder->sample_fmt = wanted;
-            break;
+    encoder->sample_fmt = sample_formats[0];
+    if (spec.codec_id == AV_CODEC_ID_ALAC) {
+        if (supports_sample_format(AV_SAMPLE_FMT_S32P)) {
+            encoder->sample_fmt = AV_SAMPLE_FMT_S32P;
+            encoder->bits_per_raw_sample = 24;
+        } else if (supports_sample_format(AV_SAMPLE_FMT_S16P)) {
+            encoder->sample_fmt = AV_SAMPLE_FMT_S16P;
+            encoder->bits_per_raw_sample = 16;
+        } else {
+            set_error("ALAC encoder supports neither s32p nor s16p");
+            output_cleanup();
+            return AVERROR(EINVAL);
+        }
+    } else {
+        const AVSampleFormat preferred[] = {
+            AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_FLT,
+            AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S32,
+            AV_SAMPLE_FMT_S16P, AV_SAMPLE_FMT_S16,
+        };
+        for (AVSampleFormat wanted : preferred) {
+            if (supports_sample_format(wanted)) {
+                encoder->sample_fmt = wanted;
+                break;
+            }
         }
     }
-    ret = av_channel_layout_copy(&encoder->ch_layout, &decoder->ch_layout);
-    if (ret < 0) { set_error("av_channel_layout_copy: " + ff_error(ret)); output_cleanup(); return ret; }
+
+    // The intermediate WAV is created as stereo. Rebuild a native/default layout
+    // from the channel count instead of copying a possibly UNSPEC decoder layout.
+    const int output_channels = decoder->ch_layout.nb_channels > 0
+        ? decoder->ch_layout.nb_channels : 2;
+    av_channel_layout_uninit(&encoder->ch_layout);
+    av_channel_layout_default(&encoder->ch_layout, output_channels);
+    if (encoder->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC ||
+        encoder->ch_layout.nb_channels <= 0) {
+        set_error("Unable to create a native channel layout for: " + format);
+        output_cleanup();
+        return AVERROR(EINVAL);
+    }
     encoder->time_base = AVRational{1, encoder->sample_rate};
     if (output->oformat->flags & AVFMT_GLOBALHEADER) encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     if ((ret = avcodec_open2(encoder.get(), encoder_codec, nullptr)) < 0) {
-        set_error(std::string("avcodec_open2 (") + format + "): " + ff_error(ret));
+        const char* sample_name = av_get_sample_fmt_name(encoder->sample_fmt);
+        set_error(std::string("avcodec_open2 (") + format + "): " + ff_error(ret) +
+                  ", rate=" + std::to_string(encoder->sample_rate) +
+                  ", channels=" + std::to_string(encoder->ch_layout.nb_channels) +
+                  ", order=" + std::to_string(static_cast<int>(encoder->ch_layout.order)) +
+                  ", sample_fmt=" + (sample_name ? sample_name : "unknown") +
+                  ", bits=" + std::to_string(encoder->bits_per_raw_sample));
         output_cleanup(); return ret;
     }
     AVStream* output_stream = avformat_new_stream(output, nullptr);
@@ -229,8 +335,16 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     if ((ret = avcodec_parameters_from_context(output_stream->codecpar, encoder.get())) < 0) {
         set_error("avcodec_parameters_from_context: " + ff_error(ret)); output_cleanup(); return ret;
     }
+    CopiedCover copied_cover;
+    ret = copy_metadata_and_cover(original_path, output, output_stream, copied_cover);
+    if (ret < 0) {
+        set_error("copy_metadata_and_cover: " + ff_error(ret));
+        free_copied_cover(copied_cover);
+        output_cleanup();
+        return ret;
+    }
     if (!(output->oformat->flags & AVFMT_NOFILE) && (ret = avio_open(&output->pb, output_path, AVIO_FLAG_WRITE)) < 0) {
-        set_error("avio_open: " + ff_error(ret)); output_cleanup(); return ret;
+        set_error("avio_open: " + ff_error(ret)); free_copied_cover(copied_cover); output_cleanup(); return ret;
     }
     AVDictionary* mux_options = nullptr;
     if (spec.codec_id == AV_CODEC_ID_MP3) {
@@ -290,6 +404,7 @@ int transcode(const char* input_path, const char* output_path, const char* forma
         if (ret >= 0) ret = write_packets(encoder.get(), output, output_stream, packet.get());
     }
     if (ret >= 0) ret = av_write_trailer(output);
+    free_copied_cover(copied_cover);
     output_cleanup();
     return ret;
 }
@@ -297,14 +412,17 @@ int transcode(const char* input_path, const char* output_path, const char* forma
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_uyatame_ucrt_dsre_DsreNativeEncoder_transcodeWav(
-    JNIEnv* env, jobject, jstring input, jstring output, jstring format) {
+    JNIEnv* env, jobject, jstring input, jstring output, jstring format,
+    jstring original) {
     const char* in_path = env->GetStringUTFChars(input, nullptr);
     const char* out_path = env->GetStringUTFChars(output, nullptr);
     const char* kind = env->GetStringUTFChars(format, nullptr);
-    const int result = transcode(in_path, out_path, kind);
+    const char* original_path = env->GetStringUTFChars(original, nullptr);
+    const int result = transcode(in_path, out_path, kind, original_path);
     env->ReleaseStringUTFChars(input, in_path);
     env->ReleaseStringUTFChars(output, out_path);
     env->ReleaseStringUTFChars(format, kind);
+    env->ReleaseStringUTFChars(original, original_path);
     if (result < 0) {
         std::lock_guard<std::mutex> lock(g_error_mutex);
         if (g_last_error.empty()) g_last_error = ff_error(result);

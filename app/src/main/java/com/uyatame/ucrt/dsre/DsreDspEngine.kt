@@ -15,6 +15,7 @@ class DsreDspEngine(
     private val parameters: DsreParameters,
 ) {
     private val contextFrames = max(0, (sampleRate * parameters.contextSeconds).toInt())
+    private val fixedFftLength = 65_536
     private var tail = Array(channels) { FloatArray(0) }
     private var dynamicEnvelope = FloatArray(channels)
 
@@ -85,17 +86,62 @@ class DsreDspEngine(
     }
 
     private fun bandpass(input: FloatArray, low: Double, high: Double): FloatArray {
-        if(input.isEmpty() || low>=high) return FloatArray(input.size)
-        val n=input.size; val re=DoubleArray(n){input[it].toDouble()}; val im=DoubleArray(n)
-        Fourier.transform(re,im,false)
-        val nyquist=sampleRate/2.0; val bw=max(20.0,(high-low)*.15)
-        val low1=max(0.0,low-bw); val high2=min(nyquist,high+bw)
-        for(k in 0 until n){ val signed=if(k<=n/2) k else k-n; val f=abs(signed.toDouble())*sampleRate/n
-            val mask=when { f<low1 || f>high2 -> 0.0; f<low -> {val t=(f-low1)/max(1e-12,low-low1);.5-.5*cos(PI*t)}; f<=high -> 1.0; else -> {val t=(f-high)/max(1e-12,high2-high);.5+.5*cos(PI*t)} }
-            re[k]*=mask; im[k]*=mask
+        if (input.isEmpty() || low >= high) return FloatArray(input.size)
+        val output = FloatArray(input.size)
+        var offset = 0
+        while (offset < input.size) {
+            val liveCount = min(fixedFftLength, input.size - offset)
+            processFixedFftBandpassBlock(input, offset, liveCount, low, high, output)
+            offset += liveCount
         }
-        Fourier.transform(re,im,true)
-        return FloatArray(n){finite(re[it].toFloat())}
+        return output
+    }
+
+    private fun processFixedFftBandpassBlock(
+        input: FloatArray,
+        inputOffset: Int,
+        liveCount: Int,
+        low: Double,
+        high: Double,
+        output: FloatArray,
+    ) {
+        require(liveCount in 1..fixedFftLength)
+        require(inputOffset >= 0 && inputOffset + liveCount <= input.size)
+        require(inputOffset + liveCount <= output.size)
+
+        // Production fixed-length FFT path. Every block uses exactly 65,536 samples.
+        // Short blocks and the final remainder are zero-padded, so Fourier.transform()
+        // always selects the tested radix-2 implementation and never Bluestein.
+        val n = fixedFftLength
+        val re = DoubleArray(n)
+        val im = DoubleArray(n)
+        for (i in 0 until liveCount) re[i] = input[inputOffset + i].toDouble()
+        Fourier.transform(re, im, false)
+
+        val nyquist = sampleRate / 2.0
+        val bw = max(20.0, (high - low) * .15)
+        val low1 = max(0.0, low - bw)
+        val high2 = min(nyquist, high + bw)
+        for (k in 0 until n) {
+            val signed = if (k <= n / 2) k else k - n
+            val frequency = abs(signed.toDouble()) * sampleRate / n
+            val mask = when {
+                frequency < low1 || frequency > high2 -> 0.0
+                frequency < low -> {
+                    val t = (frequency - low1) / max(1e-12, low - low1)
+                    .5 - .5 * cos(PI * t)
+                }
+                frequency <= high -> 1.0
+                else -> {
+                    val t = (frequency - high) / max(1e-12, high2 - high)
+                    .5 + .5 * cos(PI * t)
+                }
+            }
+            re[k] *= mask
+            im[k] *= mask
+        }
+        Fourier.transform(re, im, true)
+        for (i in 0 until liveCount) output[inputOffset + i] = finite(re[i].toFloat())
     }
 
     private fun statefulDynamic(x:Array<FloatArray>, ratio:Float):Array<FloatArray>{

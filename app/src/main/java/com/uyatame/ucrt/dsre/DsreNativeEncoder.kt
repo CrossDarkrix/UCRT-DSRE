@@ -9,7 +9,7 @@ object DsreNativeEncoder {
         System.loadLibrary("dsre_audio")
     }
 
-    external fun transcodeWav(inputPath: String, outputPath: String, format: String): Int
+    external fun transcodeWav(inputPath: String, outputPath: String, format: String, originalPath: String): Int
     external fun cancel()
     external fun lastError(): String
 }

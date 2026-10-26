@@ -25,6 +25,10 @@ class DsreFileConverter(private val context: Context) {
     fun convert(input: Uri, output: Uri, parameters: DsreParameters, outputFormat: String, onProgress: (Progress) -> Unit): Result {
         cancelled = false
         val temp = File.createTempFile("dsre_", ".wav", context.cacheDir)
+        val original = File.createTempFile("dsre_original_", ".media", context.cacheDir)
+        context.contentResolver.openInputStream(input)?.buffered()?.use { source ->
+            original.outputStream().buffered().use { target -> source.copyTo(target, 1 shl 20) }
+        } ?: throw IOException("Unable to cache the original input for metadata")
         val encoded = if (outputFormat == "WAV") null else File.createTempFile(
             "dsre_encoded_",
             when (outputFormat) {
@@ -44,7 +48,12 @@ class DsreFileConverter(private val context: Context) {
             checkCancelled()
             val completed = if (encoded == null) temp else {
                 onProgress(Progress(.97f, "Encoding $outputFormat"))
-                val code = DsreNativeEncoder.transcodeWav(temp.absolutePath, encoded.absolutePath, outputFormat)
+                val code = DsreNativeEncoder.transcodeWav(
+                    temp.absolutePath,
+                    encoded.absolutePath,
+                    outputFormat,
+                    original.absolutePath,
+                )
                 if (code < 0) throw IOException(DsreNativeEncoder.lastError().ifBlank { "FFmpeg encoding failed: $code" })
                 encoded
             }
@@ -60,6 +69,7 @@ class DsreFileConverter(private val context: Context) {
             throw e
         } finally {
             temp.delete()
+            original.delete()
             encoded?.delete()
         }
     }
