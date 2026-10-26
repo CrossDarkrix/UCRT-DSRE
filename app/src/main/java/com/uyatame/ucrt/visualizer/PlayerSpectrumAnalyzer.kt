@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
@@ -195,6 +197,12 @@ fun PlayerSpectrumAnalyzer(
             } ?: SpectrumDisplayMode.VOCAL,
         )
     }
+    var displayDelayMs by remember {
+        mutableStateOf(prefs.getInt("display_delay_ms", 80).coerceIn(0, 250))
+    }
+    LaunchedEffect(displayDelayMs) {
+        SpectrumTap.setDisplayDelayMs(displayDelayMs)
+    }
     val motion = remember { VisualizerMotionState() }
     val currentRefreshMs by rememberUpdatedState(refreshMs.coerceIn(8, 200))
     val frame by produceState(motion.update(SpectrumTap.frame(), System.nanoTime()), style) {
@@ -310,5 +318,21 @@ fun PlayerSpectrumAnalyzer(
                 )
             }
         }
+        Text(
+            "Visualizer delay: ${displayDelayMs} ms",
+            color = content.copy(alpha = .82f),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Slider(
+            value = displayDelayMs.toFloat(),
+            onValueChange = { displayDelayMs = ((it / 10f).toInt() * 10).coerceIn(0, 250) },
+            onValueChangeFinished = {
+                prefs.edit().putInt("display_delay_ms", displayDelayMs).apply()
+            },
+            valueRange = 0f..250f,
+            steps = 24,
+            modifier = Modifier.fillMaxWidth().height(28.dp),
+        )
     }
 }

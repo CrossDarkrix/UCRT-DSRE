@@ -27,10 +27,19 @@ object SpectrumTap {
     private val latest = AtomicReference(Snapshot(FloatArray(FFT_SIZE), 44100, 0, System.nanoTime()))
     private val pending = ConcurrentLinkedQueue<ScheduledSnapshot>()
     private val pendingCount = AtomicInteger(0)
+    private val displayDelayMs = AtomicInteger(80)
     private const val MAX_PENDING = 96
     private var smooth = FloatArray(BAND_COUNT)
     private var peaks = FloatArray(BAND_COUNT)
     private var lastVersion = -1L
+
+    fun setDisplayDelayMs(value: Int) {
+        val clamped = value.coerceIn(0, 250)
+        if (displayDelayMs.getAndSet(clamped) != clamped) {
+            pending.clear()
+            pendingCount.set(0)
+        }
+    }
 
     fun submit(src: FloatArray, frames: Int, channels: Int, sampleRate: Int, delayNanos: Long = 0L) {
         if (frames <= 0 || channels <= 0 || src.isEmpty()) return
@@ -100,7 +109,8 @@ object SpectrumTap {
     private fun schedule(mono: FloatArray, sampleRate: Int, delayNanos: Long) {
         val now = System.nanoTime()
         val snap = Snapshot(mono, sampleRate.coerceAtLeast(8000), version.incrementAndGet(), now)
-        val delay = delayNanos.coerceIn(0L, 2_000_000_000L)
+        val visualOffsetNanos = displayDelayMs.get().toLong() * 1_000_000L
+        val delay = (delayNanos + visualOffsetNanos).coerceIn(0L, 2_000_000_000L)
         if (delay == 0L) {
             latest.set(snap)
             return
