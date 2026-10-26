@@ -52,63 +52,138 @@ void free_copied_cover(CopiedCover& cover) {
     cover.stream_index = -1;
 }
 
+int rgb_to_yuv420p(const AVFrame* source, AVFrame* destination) {
+    if (!source || !destination || source->width <= 0 || source->height <= 0) return AVERROR(EINVAL);
+    const auto format = static_cast<AVPixelFormat>(source->format);
+    const int width = source->width;
+    const int height = source->height;
+    auto clamp_byte = [](int value) -> uint8_t {
+        return static_cast<uint8_t>(std::clamp(value, 0, 255));
+    };
+    auto rgb_at = [&](int x, int y, int& r, int& g, int& b) -> bool {
+        const uint8_t* row = source->data[0] + static_cast<ptrdiff_t>(y) * source->linesize[0];
+        switch (format) {
+            case AV_PIX_FMT_RGB24: r=row[x*3]; g=row[x*3+1]; b=row[x*3+2]; return true;
+            case AV_PIX_FMT_BGR24: b=row[x*3]; g=row[x*3+1]; r=row[x*3+2]; return true;
+            case AV_PIX_FMT_RGBA: r=row[x*4]; g=row[x*4+1]; b=row[x*4+2]; return true;
+            case AV_PIX_FMT_BGRA: b=row[x*4]; g=row[x*4+1]; r=row[x*4+2]; return true;
+            case AV_PIX_FMT_ARGB: r=row[x*4+1]; g=row[x*4+2]; b=row[x*4+3]; return true;
+            case AV_PIX_FMT_ABGR: b=row[x*4+1]; g=row[x*4+2]; r=row[x*4+3]; return true;
+            case AV_PIX_FMT_GRAY8: r=g=b=row[x]; return true;
+            default: return false;
+        }
+    };
+    int probe_r=0, probe_g=0, probe_b=0;
+    if (!rgb_at(0, 0, probe_r, probe_g, probe_b)) return AVERROR(ENOSYS);
+    for (int y=0; y<height; ++y) {
+        uint8_t* y_row = destination->data[0] + static_cast<ptrdiff_t>(y) * destination->linesize[0];
+        for (int x=0; x<width; ++x) {
+            int r,g,b; rgb_at(x,y,r,g,b);
+            y_row[x]=clamp_byte(((66*r + 129*g + 25*b + 128) >> 8) + 16);
+        }
+    }
+    for (int y=0; y<height; y+=2) {
+        uint8_t* u_row=destination->data[1]+static_cast<ptrdiff_t>(y/2)*destination->linesize[1];
+        uint8_t* v_row=destination->data[2]+static_cast<ptrdiff_t>(y/2)*destination->linesize[2];
+        for (int x=0; x<width; x+=2) {
+            int sum_r=0,sum_g=0,sum_b=0,count=0;
+            for(int dy=0;dy<2;++dy) for(int dx=0;dx<2;++dx) if(x+dx<width && y+dy<height){int r,g,b;rgb_at(x+dx,y+dy,r,g,b);sum_r+=r;sum_g+=g;sum_b+=b;++count;}
+            const int r=sum_r/count,g=sum_g/count,b=sum_b/count;
+            u_row[x/2]=clamp_byte(((-38*r - 74*g + 112*b + 128) >> 8) + 128);
+            v_row[x/2]=clamp_byte(((112*r - 94*g - 18*b + 128) >> 8) + 128);
+        }
+    }
+    return 0;
+}
+
+int convert_cover_to_mjpeg(const AVStream* source, AVPacket** converted_packet,
+                           int* width, int* height) {
+    if (!source || !source->codecpar || source->attached_pic.size <= 0 ||
+        !converted_packet || !width || !height) return AVERROR(EINVAL);
+    *converted_packet=nullptr;
+    const AVCodec* decoder_codec=avcodec_find_decoder(source->codecpar->codec_id);
+    const AVCodec* encoder_codec=avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    if(!decoder_codec || !encoder_codec) return AVERROR_DECODER_NOT_FOUND;
+    std::unique_ptr<AVCodecContext,CodecCloser> decoder(avcodec_alloc_context3(decoder_codec));
+    if(!decoder) return AVERROR(ENOMEM);
+    int ret=avcodec_parameters_to_context(decoder.get(),source->codecpar); if(ret<0)return ret;
+    if((ret=avcodec_open2(decoder.get(),decoder_codec,nullptr))<0)return ret;
+    std::unique_ptr<AVFrame,FrameCloser> decoded(av_frame_alloc()); if(!decoded)return AVERROR(ENOMEM);
+    AVPacket input{}; if((ret=av_packet_ref(&input,&source->attached_pic))<0)return ret;
+    ret=avcodec_send_packet(decoder.get(),&input); av_packet_unref(&input); if(ret<0)return ret;
+    if((ret=avcodec_receive_frame(decoder.get(),decoded.get()))<0)return ret;
+
+    std::unique_ptr<AVCodecContext,CodecCloser> encoder(avcodec_alloc_context3(encoder_codec));
+    if(!encoder)return AVERROR(ENOMEM);
+    encoder->width=decoded->width; encoder->height=decoded->height;
+    encoder->time_base={1,25}; encoder->framerate={25,1};
+    encoder->pix_fmt=AV_PIX_FMT_YUVJ420P; encoder->color_range=AVCOL_RANGE_JPEG;
+    encoder->thread_count=1; encoder->thread_type=0;
+    if((ret=avcodec_open2(encoder.get(),encoder_codec,nullptr))<0)return ret;
+    std::unique_ptr<AVFrame,FrameCloser> converted(av_frame_alloc()); if(!converted)return AVERROR(ENOMEM);
+    converted->format=encoder->pix_fmt; converted->width=encoder->width; converted->height=encoder->height;
+    converted->color_range=AVCOL_RANGE_JPEG;
+    if((ret=av_frame_get_buffer(converted.get(),32))<0)return ret;
+    if((ret=av_frame_make_writable(converted.get()))<0)return ret;
+    ret=rgb_to_yuv420p(decoded.get(),converted.get());
+    if(ret==AVERROR(ENOSYS) && decoded->format==AV_PIX_FMT_YUV420P){
+        ret=av_frame_copy(converted.get(),decoded.get());
+    }
+    if(ret<0)return ret;
+    converted->pts=0;
+    if((ret=avcodec_send_frame(encoder.get(),converted.get()))<0)return ret;
+    AVPacket* packet=av_packet_alloc(); if(!packet)return AVERROR(ENOMEM);
+    ret=avcodec_receive_packet(encoder.get(),packet);
+    if(ret<0){av_packet_free(&packet);return ret;}
+    packet->pts=0;packet->dts=0;packet->duration=0;packet->flags|=AV_PKT_FLAG_KEY;
+    *width=encoder->width;*height=encoder->height;*converted_packet=packet;
+    return 0;
+}
+
+int attach_cover_stream(AVFormatContext* output, const AVStream* source,
+                        AVCodecID codec_id, AVPacket* packet, int width, int height,
+                        CopiedCover& cover) {
+    AVStream* destination=avformat_new_stream(output,nullptr); if(!destination)return AVERROR(ENOMEM);
+    destination->codecpar->codec_type=AVMEDIA_TYPE_VIDEO;
+    destination->codecpar->codec_id=codec_id;
+    destination->codecpar->width=width;destination->codecpar->height=height;
+    destination->time_base={1,90000}; destination->disposition|=AV_DISPOSITION_ATTACHED_PIC;
+    av_dict_copy(&destination->metadata,source->metadata,0);
+    av_dict_set(&destination->metadata,"title","Album cover",AV_DICT_DONT_OVERWRITE);
+    av_dict_set(&destination->metadata,"comment","Cover (front)",AV_DICT_DONT_OVERWRITE);
+    int ret=av_packet_ref(&destination->attached_pic,packet); if(ret<0)return ret;
+    destination->attached_pic.stream_index=destination->index;
+    destination->attached_pic.pts=0;destination->attached_pic.dts=0;destination->attached_pic.duration=0;
+    destination->attached_pic.flags|=AV_PKT_FLAG_KEY;
+    cover.packet=av_packet_clone(&destination->attached_pic); if(!cover.packet)return AVERROR(ENOMEM);
+    cover.stream_index=destination->index;cover.packet->stream_index=destination->index;
+    return 0;
+}
+
 int copy_metadata_and_cover(const char* original_path, AVFormatContext* output,
                             AVStream* output_audio_stream, CopiedCover& cover) {
     if (!original_path || !*original_path || !output || !output_audio_stream) return 0;
-    AVFormatContext* raw_original = nullptr;
-    int ret = avformat_open_input(&raw_original, original_path, nullptr, nullptr);
-    if (ret < 0 || !raw_original) {
-        __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Metadata source open skipped: %s", ff_error(ret).c_str());
-        return 0;
-    }
-    std::unique_ptr<AVFormatContext, InputCloser> original(raw_original);
-    ret = avformat_find_stream_info(original.get(), nullptr);
-    if (ret < 0) {
-        __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Metadata stream info skipped: %s", ff_error(ret).c_str());
-        return 0;
-    }
-
-    av_dict_copy(&output->metadata, original->metadata, 0);
-    for (unsigned int i = 0; i < original->nb_streams; ++i) {
-        AVStream* source = original->streams[i];
-        if (!source || !source->codecpar) continue;
-        if (source->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            av_dict_copy(&output_audio_stream->metadata, source->metadata, 0);
-            break;
+    AVFormatContext* raw_original=nullptr;
+    int ret=avformat_open_input(&raw_original,original_path,nullptr,nullptr);
+    if(ret<0||!raw_original){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Metadata source open skipped: %s",ff_error(ret).c_str());return 0;}
+    std::unique_ptr<AVFormatContext,InputCloser> original(raw_original);
+    if((ret=avformat_find_stream_info(original.get(),nullptr))<0){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Metadata stream info skipped: %s",ff_error(ret).c_str());return 0;}
+    av_dict_copy(&output->metadata,original->metadata,0);
+    for(unsigned int i=0;i<original->nb_streams;++i){AVStream* source=original->streams[i];if(source&&source->codecpar&&source->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){av_dict_copy(&output_audio_stream->metadata,source->metadata,0);break;}}
+    for(unsigned int i=0;i<original->nb_streams;++i){
+        AVStream* source=original->streams[i]; if(!source||!source->codecpar)continue;
+        const bool picture=(source->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0||(source->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&source->attached_pic.size>0);
+        if(!picture||source->attached_pic.size<=0)continue;
+        if(avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
+            AVPacket direct{}; if((ret=av_packet_ref(&direct,&source->attached_pic))<0)return ret;
+            ret=attach_cover_stream(output,source,source->codecpar->codec_id,&direct,source->codecpar->width,source->codecpar->height,cover);
+            av_packet_unref(&direct); return ret;
         }
-    }
-
-    for (unsigned int i = 0; i < original->nb_streams; ++i) {
-        AVStream* source = original->streams[i];
-        if (!source || !source->codecpar) continue;
-        const bool picture =
-            (source->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0 ||
-            (source->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && source->attached_pic.size > 0);
-        if (!picture || source->attached_pic.size <= 0) continue;
-        if (avformat_query_codec(output->oformat, source->codecpar->codec_id, FF_COMPLIANCE_NORMAL) <= 0) {
-            __android_log_print(ANDROID_LOG_WARN, "DSRE-FFmpeg", "Cover codec not supported by output muxer: %d", source->codecpar->codec_id);
-            continue;
-        }
-        AVStream* destination = avformat_new_stream(output, nullptr);
-        if (!destination) return AVERROR(ENOMEM);
-        ret = avcodec_parameters_copy(destination->codecpar, source->codecpar);
-        if (ret < 0) return ret;
-        destination->time_base = source->time_base.num && source->time_base.den
-            ? source->time_base : AVRational{1, 90000};
-        destination->disposition |= AV_DISPOSITION_ATTACHED_PIC;
-        av_dict_copy(&destination->metadata, source->metadata, 0);
-        ret = av_packet_ref(&destination->attached_pic, &source->attached_pic);
-        if (ret < 0) return ret;
-        destination->attached_pic.stream_index = destination->index;
-        destination->attached_pic.pts = 0;
-        destination->attached_pic.dts = 0;
-        destination->attached_pic.duration = 0;
-        destination->attached_pic.flags |= AV_PKT_FLAG_KEY;
-        cover.packet = av_packet_clone(&destination->attached_pic);
-        if (!cover.packet) return AVERROR(ENOMEM);
-        cover.stream_index = destination->index;
-        cover.packet->stream_index = destination->index;
-        break;
+        AVPacket* mjpeg=nullptr;int width=0,height=0;
+        ret=convert_cover_to_mjpeg(source,&mjpeg,&width,&height);
+        if(ret<0){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Cover conversion skipped: %s",ff_error(ret).c_str());return 0;}
+        if(avformat_query_codec(output->oformat,AV_CODEC_ID_MJPEG,FF_COMPLIANCE_NORMAL)<=0){av_packet_free(&mjpeg);__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Output muxer does not support MJPEG cover");return 0;}
+        ret=attach_cover_stream(output,source,AV_CODEC_ID_MJPEG,mjpeg,width,height,cover);av_packet_free(&mjpeg);return ret;
     }
     return 0;
 }
