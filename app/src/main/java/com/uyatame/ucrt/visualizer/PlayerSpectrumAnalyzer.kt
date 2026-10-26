@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.pow
@@ -46,6 +47,49 @@ private enum class SpectrumStyle(val key: String, val label: String) {
     MIRROR("mirror", "Mirror"),
     LINE("line", "Line"),
     CIRCLE("circle", "Circle"),
+}
+
+private enum class SpectrumDisplayMode(val key: String, val label: String) {
+    NORMAL("normal", "NORMAL"),
+    VOCAL("vocal", "VOCAL"),
+}
+
+private val vocalWeightPoints = arrayOf(
+    30f to 0.25f,
+    80f to 0.40f,
+    150f to 0.65f,
+    300f to 1.05f,
+    500f to 1.20f,
+    1_000f to 1.40f,
+    2_000f to 1.55f,
+    3_500f to 1.35f,
+    6_000f to 1.05f,
+    10_000f to 0.80f,
+    16_000f to 0.55f,
+    20_000f to 0.40f,
+)
+
+private fun vocalDisplayWeight(frequencyHz: Float): Float {
+    val frequency = frequencyHz.coerceIn(vocalWeightPoints.first().first, vocalWeightPoints.last().first)
+    for (index in 0 until vocalWeightPoints.lastIndex) {
+        val left = vocalWeightPoints[index]
+        val right = vocalWeightPoints[index + 1]
+        if (frequency <= right.first) {
+            val position = ((ln(frequency) - ln(left.first)) / (ln(right.first) - ln(left.first))).coerceIn(0f, 1f)
+            return left.second + (right.second - left.second) * position
+        }
+    }
+    return vocalWeightPoints.last().second
+}
+
+private fun applyDisplayMode(source: FloatArray, mode: SpectrumDisplayMode): FloatArray {
+    if (mode == SpectrumDisplayMode.NORMAL || source.isEmpty()) return source.copyOf()
+    val minimumHz = 30.0
+    val maximumHz = 20_000.0
+    return FloatArray(source.size) { index ->
+        val center = minimumHz * Math.pow(maximumHz / minimumHz, (index + 0.5) / source.size)
+        (source[index] * vocalDisplayWeight(center.toFloat())).coerceIn(0f, 1f)
+    }
 }
 
 private fun smoothBands(source: FloatArray): FloatArray {
@@ -144,6 +188,13 @@ fun PlayerSpectrumAnalyzer(
     var style by remember {
         mutableStateOf(SpectrumStyle.entries.firstOrNull { it.key == prefs.getString("style", "bars") } ?: SpectrumStyle.BARS)
     }
+    var displayMode by remember {
+        mutableStateOf(
+            SpectrumDisplayMode.entries.firstOrNull {
+                it.key == prefs.getString("display_mode", "vocal")
+            } ?: SpectrumDisplayMode.VOCAL,
+        )
+    }
     val motion = remember { VisualizerMotionState() }
     val currentRefreshMs by rememberUpdatedState(refreshMs.coerceIn(8, 200))
     val frame by produceState(motion.update(SpectrumTap.frame(), System.nanoTime()), style) {
@@ -157,8 +208,8 @@ fun PlayerSpectrumAnalyzer(
         Canvas(
             Modifier.fillMaxWidth().height(height).background(Color.Black.copy(alpha = 0.14f), RoundedCornerShape(12.dp)),
         ) {
-            val bands = smoothBands(frame.bands)
-            val peaks = smoothBands(frame.peaks)
+            val bands = smoothBands(applyDisplayMode(frame.bands, displayMode))
+            val peaks = smoothBands(applyDisplayMode(frame.peaks, displayMode))
             val wave = smoothWaveform(frame.waveform)
             val pad = 8.dp.toPx()
             val w = size.width - pad * 2
@@ -235,6 +286,27 @@ fun PlayerSpectrumAnalyzer(
                             style = item
                             prefs.edit().putString("style", item.key).apply()
                         }.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            SpectrumDisplayMode.entries.forEach { item ->
+                val selected = item == displayMode
+                Text(
+                    item.label,
+                    color = if (selected) Color.Black else content.copy(alpha = .82f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.background(
+                        if (selected) (if (colorArgb == 0) accent else Color(colorArgb))
+                        else content.copy(alpha = .10f),
+                        RoundedCornerShape(50),
+                    ).clickable {
+                        displayMode = item
+                        prefs.edit().putString("display_mode", item.key).apply()
+                    }.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
         }
