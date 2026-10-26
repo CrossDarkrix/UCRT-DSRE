@@ -66,8 +66,9 @@ class DsreDspEngine(
         val scale = intensity.coerceIn(.1f,1.5f)
         fun processChannel(ch: Int): FloatArray {
             val original=x[ch]; val enhanced=FloatArray(original.size)
-            for (band in bands) {
-                val filtered=bandpass(original,band.low,band.high)
+            val filteredBands=sharedBandpass(original,bands)
+            for ((bandIndex, band) in bands.withIndex()) {
+                val filtered=filteredBands[bandIndex]
                 var center=(band.low+band.high)/2.0
                 if(center<=0.0) center=1.0
                 val harmonic=generateHarmonics(filtered,center,band.harmonics,band.strength*scale)
@@ -91,63 +92,73 @@ class DsreDspEngine(
         return sanitize(out)
     }
 
-    private fun bandpass(input: FloatArray, low: Double, high: Double): FloatArray {
-        if (input.isEmpty() || low >= high) return FloatArray(input.size)
-        val output = FloatArray(input.size)
+    private fun sharedBandpass(input: FloatArray, bands: List<Band>): Array<FloatArray> {
+        val outputs = Array(bands.size) { FloatArray(input.size) }
+        if (input.isEmpty() || bands.isEmpty()) return outputs
         var offset = 0
         while (offset < input.size) {
             val liveCount = min(fixedFftLength, input.size - offset)
-            processFixedFftBandpassBlock(input, offset, liveCount, low, high, output)
+            processSharedForwardFftBlock(input, offset, liveCount, bands, outputs)
             offset += liveCount
         }
-        return output
+        return outputs
     }
 
-    private fun processFixedFftBandpassBlock(
+    private fun processSharedForwardFftBlock(
         input: FloatArray,
         inputOffset: Int,
         liveCount: Int,
-        low: Double,
-        high: Double,
-        output: FloatArray,
+        bands: List<Band>,
+        outputs: Array<FloatArray>,
     ) {
         require(liveCount in 1..fixedFftLength)
         require(inputOffset >= 0 && inputOffset + liveCount <= input.size)
-        require(inputOffset + liveCount <= output.size)
+        require(outputs.size == bands.size)
+        require(outputs.all { inputOffset + liveCount <= it.size })
 
-        // Production fixed-length FFT path. Every block uses exactly 65,536 samples.
-        // Short blocks and the final remainder are zero-padded, so Fourier.transform()
-        // always selects the tested radix-2 implementation and never Bluestein.
+        // The source spectrum is identical for every band. Compute it once for this
+        // fixed 65,536-sample block, then clone the spectrum before applying each
+        // band's original mask and inverse transform. This preserves the previous
+        // per-band DSP math while removing six redundant forward FFTs per channel.
         val n = fixedFftLength
-        val re = DoubleArray(n)
-        val im = DoubleArray(n)
-        for (i in 0 until liveCount) re[i] = input[inputOffset + i].toDouble()
-        Fourier.transform(re, im, false)
+        lateinit var sourceRe: DoubleArray
+        lateinit var sourceIm: DoubleArray
+        sourceRe = DoubleArray(n)
+        sourceIm = DoubleArray(n)
+        for (i in 0 until liveCount) sourceRe[i] = input[inputOffset + i].toDouble()
+        Fourier.transform(sourceRe, sourceIm, false)
 
         val nyquist = sampleRate / 2.0
-        val bw = max(20.0, (high - low) * .15)
-        val low1 = max(0.0, low - bw)
-        val high2 = min(nyquist, high + bw)
-        for (k in 0 until n) {
-            val signed = if (k <= n / 2) k else k - n
-            val frequency = abs(signed.toDouble()) * sampleRate / n
-            val mask = when {
-                frequency < low1 || frequency > high2 -> 0.0
-                frequency < low -> {
-                    val t = (frequency - low1) / max(1e-12, low - low1)
-                    .5 - .5 * cos(PI * t)
-                }
-                frequency <= high -> 1.0
-                else -> {
-                    val t = (frequency - high) / max(1e-12, high2 - high)
-                    .5 + .5 * cos(PI * t)
-                }
+        for ((bandIndex, band) in bands.withIndex()) {
+            lateinit var re: DoubleArray
+            lateinit var im: DoubleArray
+            re = sourceRe.copyOf()
+            im = sourceIm.copyOf()
+            val bw = max(20.0, (band.high - band.low) * .15)
+            val low1 = max(0.0, band.low - bw)
+            val high2 = min(nyquist, band.high + bw)
+            for (k in 0 until n) {
+                    val signed = if (k <= n / 2) k else k - n
+                    val frequency = abs(signed.toDouble()) * sampleRate / n
+                    val mask = when {
+                        frequency < low1 || frequency > high2 -> 0.0
+                        frequency < band.low -> {
+                            val t = (frequency - low1) / max(1e-12, band.low - low1)
+                            .5 - .5 * cos(PI * t)
+                        }
+                        frequency <= band.high -> 1.0
+                        else -> {
+                            val t = (frequency - band.high) / max(1e-12, high2 - band.high)
+                            .5 + .5 * cos(PI * t)
+                        }
+                    }
+                    re[k] *= mask
+                    im[k] *= mask
             }
-            re[k] *= mask
-            im[k] *= mask
+            Fourier.transform(re, im, true)
+            val output = outputs[bandIndex]
+            for (i in 0 until liveCount) output[inputOffset + i] = finite(re[i].toFloat())
         }
-        Fourier.transform(re, im, true)
-        for (i in 0 until liveCount) output[inputOffset + i] = finite(re[i].toFloat())
     }
 
     private fun statefulDynamic(x:Array<FloatArray>, ratio:Float):Array<FloatArray>{
@@ -180,11 +191,150 @@ class DsreDspEngine(
 }
 
 private object Fourier {
-    fun transform(re:DoubleArray,im:DoubleArray,inverse:Boolean){require(re.size==im.size);if(re.isEmpty())return; if ((re.size and (re.size - 1)) == 0) radix2(re,im,inverse) else bluestein(re,im,inverse);if(inverse){val n=re.size.toDouble();for(i in re.indices){re[i]/=n;im[i]/=n}}}
-    private fun radix2(re:DoubleArray,im:DoubleArray,inverse:Boolean){val n=re.size;var levels=0;var t=n;while(t>1){levels++;t=t ushr 1};for(i in 0 until n){val j=Integer.reverse(i) ushr (32-levels);if(j>i){var q=re[i];re[i]=re[j];re[j]=q;q=im[i];im[i]=im[j];im[j]=q}}
-        var size=2;while(size<=n){val half=size/2;val sign=if(inverse)2.0 else -2.0;for(i in 0 until n step size)for(j in 0 until half){val a=sign*PI*j/size;val c=cos(a);val s=sin(a);val k=i+j;val l=k+half;val tr=re[l]*c-im[l]*s;val ti=re[l]*s+im[l]*c;re[l]=re[k]-tr;im[l]=im[k]-ti;re[k]+=tr;im[k]+=ti};size=size shl 1}}
+    private const val fixedPlanLength = 65_536
+    private val fixedPlan by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { Radix2Plan(fixedPlanLength) }
+
+    fun transform(re: DoubleArray, im: DoubleArray, inverse: Boolean) {
+        require(re.size == im.size)
+        if (re.isEmpty()) return
+        if ((re.size and (re.size - 1)) == 0) {
+            if (re.size == fixedPlanLength) fixedPlan.transform(re, im, inverse)
+            else radix2Reference(re, im, inverse)
+        } else {
+            bluestein(re, im, inverse)
+        }
+        if (inverse) {
+            val n = re.size.toDouble()
+            for (i in re.indices) { re[i] /= n; im[i] /= n }
+        }
+    }
+
+    /**
+     * Immutable plan for the production 65,536-point radix-2 transform.
+     * The reference implementation calculated bit reversal and sin/cos inside every call.
+     * This plan calculates the exact same indexes and angle expressions once, then reuses them.
+     */
+    private class Radix2Plan(val length: Int) {
+        private val swapLeft: IntArray
+        private val swapRight: IntArray
+        private val stages: Array<Stage>
+
+        init {
+            require(length > 0 && (length and (length - 1)) == 0)
+            var levels = 0
+            var value = length
+            while (value > 1) { levels++; value = value ushr 1 }
+
+            val left = ArrayList<Int>(length / 2)
+            val right = ArrayList<Int>(length / 2)
+            for (i in 0 until length) {
+                val reversed = Integer.reverse(i) ushr (32 - levels)
+                if (reversed > i) { left += i; right += reversed }
+            }
+            swapLeft = left.toIntArray()
+            swapRight = right.toIntArray()
+
+            val stageList = ArrayList<Stage>(levels)
+            var size = 2
+            while (size <= length) {
+                val half = size / 2
+                val forwardCosTable = DoubleArray(half)
+                val forwardSinTable = DoubleArray(half)
+                val inverseCosTable = DoubleArray(half)
+                val inverseSinTable = DoubleArray(half)
+                for (j in 0 until half) {
+                    // Preserve the reference implementation's exact forward and inverse
+                    // angle expressions instead of deriving one direction by sign flipping.
+                    val forwardAngle = -2.0 * PI * j / size
+                    val inverseAngle = 2.0 * PI * j / size
+                    forwardCosTable[j] = cos(forwardAngle)
+                    forwardSinTable[j] = sin(forwardAngle)
+                    inverseCosTable[j] = cos(inverseAngle)
+                    inverseSinTable[j] = sin(inverseAngle)
+                }
+                stageList += Stage(
+                    size, half,
+                    forwardCosTable, forwardSinTable,
+                    inverseCosTable, inverseSinTable,
+                )
+                size = size shl 1
+            }
+            stages = stageList.toTypedArray()
+        }
+
+        fun transform(re: DoubleArray, im: DoubleArray, inverse: Boolean) {
+            require(re.size == length && im.size == length)
+            for (index in swapLeft.indices) {
+                val i = swapLeft[index]
+                val j = swapRight[index]
+                var value = re[i]; re[i] = re[j]; re[j] = value
+                value = im[i]; im[i] = im[j]; im[j] = value
+            }
+            for (stage in stages) {
+                for (base in 0 until length step stage.size) {
+                    for (j in 0 until stage.half) {
+                        val c = if (inverse) stage.inverseCosTable[j] else stage.forwardCosTable[j]
+                        val sine = if (inverse) stage.inverseSinTable[j] else stage.forwardSinTable[j]
+                        val first = base + j
+                        val second = first + stage.half
+                        val transformedReal = re[second] * c - im[second] * sine
+                        val transformedImag = re[second] * sine + im[second] * c
+                        re[second] = re[first] - transformedReal
+                        im[second] = im[first] - transformedImag
+                        re[first] += transformedReal
+                        im[first] += transformedImag
+                    }
+                }
+            }
+        }
+    }
+
+    private data class Stage(
+        val size: Int,
+        val half: Int,
+        val forwardCosTable: DoubleArray,
+        val forwardSinTable: DoubleArray,
+        val inverseCosTable: DoubleArray,
+        val inverseSinTable: DoubleArray,
+    )
+
+    // Retained for non-production power-of-two sizes used by Bluestein convolution/fallbacks.
+    private fun radix2Reference(re: DoubleArray, im: DoubleArray, inverse: Boolean) {
+        val n = re.size
+        var levels = 0
+        var value = n
+        while (value > 1) { levels++; value = value ushr 1 }
+        for (i in 0 until n) {
+            val j = Integer.reverse(i) ushr (32 - levels)
+            if (j > i) {
+                var item = re[i]; re[i] = re[j]; re[j] = item
+                item = im[i]; im[i] = im[j]; im[j] = item
+            }
+        }
+        var size = 2
+        while (size <= n) {
+            val half = size / 2
+            val sign = if (inverse) 2.0 else -2.0
+            for (base in 0 until n step size) for (j in 0 until half) {
+                val angle = sign * PI * j / size
+                val c = cos(angle)
+                val sine = sin(angle)
+                val first = base + j
+                val second = first + half
+                val transformedReal = re[second] * c - im[second] * sine
+                val transformedImag = re[second] * sine + im[second] * c
+                re[second] = re[first] - transformedReal
+                im[second] = im[first] - transformedImag
+                re[first] += transformedReal
+                im[first] += transformedImag
+            }
+            size = size shl 1
+        }
+    }
+
     private fun bluestein(re:DoubleArray,im:DoubleArray,inverse:Boolean){val n=re.size;var m=1;while(m<n*2-1)m=m shl 1;val ar=DoubleArray(m);val ai=DoubleArray(m);val br=DoubleArray(m);val bi=DoubleArray(m);val sign=if(inverse)1.0 else -1.0
         for(i in 0 until n){val a=PI*(i.toLong()*i%n).toDouble()/n;val c=cos(a);val s=sin(a)*sign;ar[i]=re[i]*c-im[i]*s;ai[i]=re[i]*s+im[i]*c;br[i]=c;bi[i]=-s;if(i!=0){br[m-i]=c;bi[m-i]=-s}}
         convolve(ar,ai,br,bi);for(i in 0 until n){val a=PI*(i.toLong()*i%n).toDouble()/n;val c=cos(a);val s=sin(a)*sign;re[i]=ar[i]*c-ai[i]*s;im[i]=ar[i]*s+ai[i]*c}}
-    private fun convolve(xr:DoubleArray,xi:DoubleArray,yr:DoubleArray,yi:DoubleArray){radix2(xr,xi,false);radix2(yr,yi,false);for(i in xr.indices){val r=xr[i]*yr[i]-xi[i]*yi[i];val v=xi[i]*yr[i]+xr[i]*yi[i];xr[i]=r;xi[i]=v};radix2(xr,xi,true);val n=xr.size.toDouble();for(i in xr.indices){xr[i]/=n;xi[i]/=n}}
+    private fun convolve(xr:DoubleArray,xi:DoubleArray,yr:DoubleArray,yi:DoubleArray){radix2Reference(xr,xi,false);radix2Reference(yr,yi,false);for(i in xr.indices){val r=xr[i]*yr[i]-xi[i]*yi[i];val v=xi[i]*yr[i]+xr[i]*yi[i];xr[i]=r;xi[i]=v};radix2Reference(xr,xi,true);val n=xr.size.toDouble();for(i in xr.indices){xr[i]/=n;xi[i]/=n}}
 }
+

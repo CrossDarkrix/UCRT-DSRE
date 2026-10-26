@@ -1,0 +1,3 @@
+# DSRE production optimization
+
+This production revision retains Forward FFT sharing and the immutable 65,536-point FFT plan with precomputed bit-reversal swaps and separate forward/inverse twiddle tables. All temporary profiling code has been removed: no SystemClock timers, LongAdder counters, profile result models, conversion coordinator profile state, diagnostics button, diagnostics dialog, or clipboard report remains. The optimized DSP equations, seven bands, per-band inverse FFT, Harmonic synthesis, L/R parallel processing, output formats, two-stage cover finalization, and cover verification remain unchanged.
