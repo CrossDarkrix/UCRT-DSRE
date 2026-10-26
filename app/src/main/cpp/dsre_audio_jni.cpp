@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -52,6 +53,39 @@ struct CopiedCover {
 void free_copied_cover(CopiedCover& cover) {
     if (cover.packet) av_packet_free(&cover.packet);
     cover.stream_index = -1;
+}
+
+int write_copied_cover(AVFormatContext* output, const CopiedCover& cover) {
+    if (!output || !cover.packet || cover.stream_index < 0 ||
+        cover.stream_index >= static_cast<int>(output->nb_streams)) return 0;
+    AVPacket* packet = av_packet_clone(cover.packet);
+    if (!packet) return AVERROR(ENOMEM);
+    packet->stream_index = cover.stream_index;
+    packet->pts = 0; packet->dts = 0; packet->duration = 0; packet->pos = -1;
+    packet->flags |= AV_PKT_FLAG_KEY;
+    __android_log_print(ANDROID_LOG_WARN, "DSRE-COVER", "write stream=%d codec=%s bytes=%d",
+        cover.stream_index, avcodec_get_name(output->streams[cover.stream_index]->codecpar->codec_id), packet->size);
+    const int ret = av_interleaved_write_frame(output, packet);
+    av_packet_free(&packet);
+    if (ret < 0) set_error("Cover packet write failed: " + ff_error(ret));
+    return ret;
+}
+
+int verify_copied_cover(const char* path) {
+    AVFormatContext* raw = nullptr;
+    int ret = avformat_open_input(&raw, path, nullptr, nullptr);
+    if (ret < 0) return ret;
+    std::unique_ptr<AVFormatContext,InputCloser> input(raw);
+    if ((ret = avformat_find_stream_info(input.get(), nullptr)) < 0) return ret;
+    for (unsigned i = 0; i < input->nb_streams; ++i) {
+        const AVStream* stream = input->streams[i];
+        const bool attached = (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+        __android_log_print(ANDROID_LOG_WARN, "DSRE-COVER", "verify stream=%u type=%d codec=%s attached=%d bytes=%d",
+            i, stream->codecpar->codec_type, avcodec_get_name(stream->codecpar->codec_id), attached ? 1 : 0,
+            stream->attached_pic.size);
+        if (attached && stream->attached_pic.size > 0) return 0;
+    }
+    return AVERROR_STREAM_NOT_FOUND;
 }
 
 int rgb_to_yuv420p(const AVFrame* source, AVFrame* destination) {
@@ -187,31 +221,88 @@ int copy_metadata_and_cover(const char* original_path, AVFormatContext* output,
     if (!original_path || !*original_path || !output || !output_audio_stream) return 0;
     AVFormatContext* raw_original=nullptr;
     int ret=avformat_open_input(&raw_original,original_path,nullptr,nullptr);
-    if(ret<0||!raw_original){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Metadata source open skipped: %s",ff_error(ret).c_str());return 0;}
+    if(ret<0){
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","Original open failed: %s",ff_error(ret).c_str());
+        return 0;
+    }
     std::unique_ptr<AVFormatContext,InputCloser> original(raw_original);
-    if((ret=avformat_find_stream_info(original.get(),nullptr))<0){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Metadata stream info skipped: %s",ff_error(ret).c_str());return 0;}
+    if((ret=avformat_find_stream_info(original.get(),nullptr))<0){
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","Original stream info failed: %s",ff_error(ret).c_str());
+        return 0;
+    }
     av_dict_copy(&output->metadata,original->metadata,0);
-    for(unsigned int i=0;i<original->nb_streams;++i){AVStream* source=original->streams[i];if(source&&source->codecpar&&source->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){av_dict_copy(&output_audio_stream->metadata,source->metadata,0);break;}}
     for(unsigned int i=0;i<original->nb_streams;++i){
-        AVStream* source=original->streams[i]; if(!source||!source->codecpar)continue;
-        const bool picture=(source->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0||(source->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&source->attached_pic.size>0);
-        if(!picture||source->attached_pic.size<=0)continue;
-        const std::string muxer_name = output->oformat && output->oformat->name ? output->oformat->name : "";
-        const bool force_mjpeg = muxer_name.find("mp3") != std::string::npos ||
-            muxer_name.find("ipod") != std::string::npos ||
-            muxer_name.find("mp4") != std::string::npos ||
-            muxer_name.find("mov") != std::string::npos;
-        if(!force_mjpeg && avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
-            AVPacket direct{}; if((ret=av_packet_ref(&direct,&source->attached_pic))<0)return ret;
-            ret=attach_cover_stream(output,source,source->codecpar->codec_id,&direct,source->codecpar->width,source->codecpar->height,cover);
-            av_packet_unref(&direct); return ret;
+        AVStream* source=original->streams[i];
+        if(source&&source->codecpar&&source->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){
+            av_dict_copy(&output_audio_stream->metadata,source->metadata,0);
+            break;
+        }
+    }
+    const std::string muxer_name=output->oformat&&output->oformat->name?output->oformat->name:"";
+    const bool force_mjpeg=muxer_name.find("mp3")!=std::string::npos||
+        muxer_name.find("ipod")!=std::string::npos||muxer_name.find("mp4")!=std::string::npos||
+        muxer_name.find("mov")!=std::string::npos;
+    auto process_cover=[&](AVStream* source)->int{
+        if(!source||!source->codecpar||source->attached_pic.size<=0)return AVERROR_INVALIDDATA;
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER",
+            "Source cover stream=%d codec=%s disposition=0x%x bytes=%d force_mjpeg=%d muxer=%s",
+            source->index,avcodec_get_name(source->codecpar->codec_id),source->disposition,
+            source->attached_pic.size,force_mjpeg?1:0,muxer_name.c_str());
+        if(!force_mjpeg&&avformat_query_codec(output->oformat,source->codecpar->codec_id,FF_COMPLIANCE_NORMAL)>0){
+            AVPacket direct{};
+            int local=av_packet_ref(&direct,&source->attached_pic);
+            if(local<0)return local;
+            local=attach_cover_stream(output,source,source->codecpar->codec_id,&direct,
+                source->codecpar->width,source->codecpar->height,cover);
+            av_packet_unref(&direct);
+            return local;
         }
         AVPacket* mjpeg=nullptr;int width=0,height=0;
-        ret=convert_cover_to_mjpeg(source,&mjpeg,&width,&height);
-        if(ret<0){__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Cover conversion skipped: %s",ff_error(ret).c_str());return 0;}
-        if(avformat_query_codec(output->oformat,AV_CODEC_ID_MJPEG,FF_COMPLIANCE_NORMAL)<=0){av_packet_free(&mjpeg);__android_log_print(ANDROID_LOG_WARN,"DSRE-FFmpeg","Output muxer does not support MJPEG cover");return 0;}
-        ret=attach_cover_stream(output,source,AV_CODEC_ID_MJPEG,mjpeg,width,height,cover);av_packet_free(&mjpeg);return ret;
+        int local=convert_cover_to_mjpeg(source,&mjpeg,&width,&height);
+        if(local<0){
+            set_error("Cover conversion failed: "+ff_error(local));
+            return local;
+        }
+        // Do not use avformat_query_codec as a gate here. The MP3 and MOV/IPOD
+        // muxers accept attached MJPEG packets even when the generic query is inconclusive.
+        local=attach_cover_stream(output,source,AV_CODEC_ID_MJPEG,mjpeg,width,height,cover);
+        av_packet_free(&mjpeg);
+        if(local<0)set_error("Cover stream creation failed: "+ff_error(local));
+        return local;
+    };
+    int packet_fallback_index=-1;
+    for(unsigned int i=0;i<original->nb_streams;++i){
+        AVStream* source=original->streams[i];
+        if(!source||!source->codecpar)continue;
+        const bool attached=(source->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0;
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER",
+            "Original stream=%u type=%d codec=%s disposition=0x%x attached_bytes=%d",
+            i,source->codecpar->codec_type,avcodec_get_name(source->codecpar->codec_id),
+            source->disposition,source->attached_pic.size);
+        if((attached||source->attached_pic.size>0)&&source->attached_pic.size>0)return process_cover(source);
+        if(attached&&packet_fallback_index<0)packet_fallback_index=static_cast<int>(i);
     }
+    if(packet_fallback_index>=0){
+        AVPacket packet{};
+        while((ret=av_read_frame(original.get(),&packet))>=0){
+            if(packet.stream_index==packet_fallback_index&&packet.size>0){
+                AVStream* source=original->streams[packet_fallback_index];
+                AVStream fallback{};
+                fallback.index=source->index;
+                fallback.codecpar=source->codecpar;
+                fallback.metadata=source->metadata;
+                fallback.disposition=source->disposition|AV_DISPOSITION_ATTACHED_PIC;
+                fallback.attached_pic=packet;
+                __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER",
+                    "Using packet fallback stream=%d bytes=%d",packet_fallback_index,packet.size);
+                const int local=process_cover(&fallback);
+                av_packet_unref(&packet);
+                return local;
+            }
+            av_packet_unref(&packet);
+        }
+    }
+    __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","No source attached picture; conversion continues without cover");
     return 0;
 }
 
@@ -279,6 +370,25 @@ int encode_fifo(AVAudioFifo* fifo, AVCodecContext* encoder, AVFormatContext* out
     return 0;
 }
 
+int copy_metadata_only(const char* original_path, AVFormatContext* output,
+                       AVStream* output_audio_stream) {
+    if(!original_path||!*original_path||!output||!output_audio_stream)return 0;
+    AVFormatContext* raw=nullptr;
+    int ret=avformat_open_input(&raw,original_path,nullptr,nullptr);
+    if(ret<0)return ret;
+    std::unique_ptr<AVFormatContext,InputCloser> original(raw);
+    if((ret=avformat_find_stream_info(original.get(),nullptr))<0)return ret;
+    av_dict_copy(&output->metadata,original->metadata,0);
+    for(unsigned i=0;i<original->nb_streams;++i){
+        AVStream* stream=original->streams[i];
+        if(stream&&stream->codecpar&&stream->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){
+            av_dict_copy(&output_audio_stream->metadata,stream->metadata,0);
+            break;
+        }
+    }
+    return 0;
+}
+
 struct OutputSpec {
     AVCodecID codec_id;
     const char* encoder_name;
@@ -302,8 +412,8 @@ bool output_spec(const std::string& format, OutputSpec& spec) {
     return false;
 }
 
-int transcode(const char* input_path, const char* output_path, const char* format_name,
-              const char* original_path) {
+int transcode_audio_stage(const char* input_path, const char* output_path, const char* format_name,
+                          const char* original_path) {
     g_cancelled = false;
     AVFormatContext* raw_input = nullptr;
     int ret = avformat_open_input(&raw_input, input_path, nullptr, nullptr);
@@ -437,16 +547,14 @@ int transcode(const char* input_path, const char* output_path, const char* forma
     if ((ret = avcodec_parameters_from_context(output_stream->codecpar, encoder.get())) < 0) {
         set_error("avcodec_parameters_from_context: " + ff_error(ret)); output_cleanup(); return ret;
     }
-    CopiedCover copied_cover;
-    ret = copy_metadata_and_cover(original_path, output, output_stream, copied_cover);
+    ret = copy_metadata_only(original_path, output, output_stream);
     if (ret < 0) {
-        set_error("copy_metadata_and_cover: " + ff_error(ret));
-        free_copied_cover(copied_cover);
+        set_error("copy_metadata_only: " + ff_error(ret));
         output_cleanup();
         return ret;
     }
     if (!(output->oformat->flags & AVFMT_NOFILE) && (ret = avio_open(&output->pb, output_path, AVIO_FLAG_WRITE)) < 0) {
-        set_error("avio_open: " + ff_error(ret)); free_copied_cover(copied_cover); output_cleanup(); return ret;
+        set_error("avio_open: " + ff_error(ret)); output_cleanup(); return ret;
     }
     AVDictionary* mux_options = nullptr;
     if (spec.codec_id == AV_CODEC_ID_MP3) {
@@ -506,8 +614,99 @@ int transcode(const char* input_path, const char* output_path, const char* forma
         if (ret >= 0) ret = write_packets(encoder.get(), output, output_stream, packet.get());
     }
     if (ret >= 0) ret = av_write_trailer(output);
-    free_copied_cover(copied_cover);
     output_cleanup();
+    return ret;
+}
+
+int finalize_dsre_output(const char* audio_stage_path, const char* original_path,
+                         const char* final_output_path, const char* format_name) {
+    AVFormatContext* raw_audio=nullptr;
+    int ret=avformat_open_input(&raw_audio,audio_stage_path,nullptr,nullptr);
+    if(ret<0)return ret;
+    std::unique_ptr<AVFormatContext,InputCloser> audio(raw_audio);
+    if((ret=avformat_find_stream_info(audio.get(),nullptr))<0)return ret;
+    const int audio_index=av_find_best_stream(audio.get(),AVMEDIA_TYPE_AUDIO,-1,-1,nullptr,0);
+    if(audio_index<0)return audio_index;
+    OutputSpec spec{};
+    if(!output_spec(format_name?format_name:"",spec))return AVERROR(EINVAL);
+    AVFormatContext* output=nullptr;
+    ret=avformat_alloc_output_context2(&output,nullptr,spec.muxer_name,final_output_path);
+    if(ret<0||!output)return ret<0?ret:AVERROR(ENOMEM);
+    auto cleanup=[&](){
+        if(!output)return;
+        if(!(output->oformat->flags&AVFMT_NOFILE)&&output->pb)avio_closep(&output->pb);
+        avformat_free_context(output);output=nullptr;
+    };
+    AVStream* input_audio=audio->streams[audio_index];
+    AVStream* output_audio=avformat_new_stream(output,nullptr);
+    if(!output_audio){cleanup();return AVERROR(ENOMEM);}
+    if((ret=avcodec_parameters_copy(output_audio->codecpar,input_audio->codecpar))<0){cleanup();return ret;}
+    output_audio->codecpar->codec_tag=0;
+    output_audio->time_base=input_audio->time_base;
+    output_audio->disposition=input_audio->disposition;
+    av_dict_copy(&output_audio->metadata,input_audio->metadata,0);
+    CopiedCover cover;
+    ret=copy_metadata_and_cover(original_path,output,output_audio,cover);
+    if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    const bool cover_expected=cover.packet!=nullptr;
+    if(!cover_expected){
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER",
+            "Finalize stage: source has no cover; producing valid audio-only output");
+    }
+    std::remove(final_output_path);
+    if(!(output->oformat->flags&AVFMT_NOFILE)&&
+       (ret=avio_open(&output->pb,final_output_path,AVIO_FLAG_WRITE))<0){
+        free_copied_cover(cover);cleanup();return ret;
+    }
+    AVDictionary* options=nullptr;
+    if(spec.codec_id==AV_CODEC_ID_MP3){
+        av_dict_set(&options,"id3v2_version","3",0);
+        av_dict_set(&options,"write_id3v1","0",0);
+    }
+    ret=avformat_write_header(output,&options);
+    av_dict_free(&options);
+    if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    if(cover_expected){
+        ret=write_copied_cover(output,cover);
+        if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    }
+    AVPacket* packet=av_packet_alloc();
+    if(!packet){free_copied_cover(cover);cleanup();return AVERROR(ENOMEM);}
+    while((ret=av_read_frame(audio.get(),packet))>=0){
+        if(packet->stream_index!=audio_index){av_packet_unref(packet);continue;}
+        av_packet_rescale_ts(packet,input_audio->time_base,output_audio->time_base);
+        packet->stream_index=output_audio->index;
+        packet->pos=-1;
+        ret=av_interleaved_write_frame(output,packet);
+        av_packet_unref(packet);
+        if(ret<0)break;
+    }
+    av_packet_free(&packet);
+    if(ret==AVERROR_EOF)ret=0;
+    if(ret>=0)ret=av_write_trailer(output);
+    free_copied_cover(cover);
+    cleanup();
+    if(ret>=0&&cover_expected){
+        ret=verify_copied_cover(final_output_path);
+        if(ret<0)set_error("Final cover verification failed: attached cover not found");
+    }
+    return ret;
+}
+
+int transcode(const char* input_path, const char* output_path, const char* format_name,
+              const char* original_path) {
+    const std::string stage_path=std::string(output_path)+".dsre-audio-stage";
+    std::remove(stage_path.c_str());
+    std::remove(output_path);
+    __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","Stage 1: encoding audio-only intermediate");
+    int ret=transcode_audio_stage(input_path,stage_path.c_str(),format_name,original_path);
+    if(ret>=0&&!g_cancelled){
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER",
+            "Stage 2: final remux with explicit source cover");
+        ret=finalize_dsre_output(stage_path.c_str(),original_path,output_path,format_name);
+    }
+    std::remove(stage_path.c_str());
+    if(ret<0)std::remove(output_path);
     return ret;
 }
 
@@ -529,6 +728,7 @@ int remux_metadata_file(const char* input_path, const char* output_path,
     av_dict_copy(&output->metadata,input->metadata,0);
     for(const auto& tag:tags)set_tag(&output->metadata,tag.first.c_str(),tag.second.c_str());
     const std::string mode=cover_mode?cover_mode:"KEEP";
+    const bool cover_required = mode == "REPLACE";
     std::vector<int> stream_map(input->nb_streams,-1);
     CopiedCover cover;
     for(unsigned i=0;i<input->nb_streams;++i){
@@ -561,9 +761,17 @@ int remux_metadata_file(const char* input_path, const char* output_path,
             if(ret>=0){int vi=av_find_best_stream(cover_input.get(),AVMEDIA_TYPE_VIDEO,-1,-1,nullptr,0);if(vi>=0){AVPacket packet{};while(av_read_frame(cover_input.get(),&packet)>=0){if(packet.stream_index==vi){AVStream fake{};fake.codecpar=cover_input->streams[vi]->codecpar;fake.metadata=cover_input->streams[vi]->metadata;fake.attached_pic=packet;fake.disposition=AV_DISPOSITION_ATTACHED_PIC;ret=add_source_cover(&fake);av_packet_unref(&packet);break;}av_packet_unref(&packet);}}else ret=vi;}}
     }
     if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    if(cover_required && !cover.packet){
+        set_error("Cover replacement was requested, but no cover packet was produced");
+        free_copied_cover(cover);cleanup();return AVERROR_INVALIDDATA;
+    }
+    if(!cover_required && !cover.packet){
+        __android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","No source cover; continuing without attached picture (mode=%s)",mode.c_str());
+    }
     if(!(output->oformat->flags&AVFMT_NOFILE)&&(ret=avio_open(&output->pb,output_path,AVIO_FLAG_WRITE))<0){free_copied_cover(cover);cleanup();return ret;}
     AVDictionary* options=nullptr;if(std::string(output->oformat->name).find("mp3")!=std::string::npos)av_dict_set(&options,"id3v2_version","3",0);
-    ret=avformat_write_header(output,&options);av_dict_free(&options);if(ret<0){free_copied_cover(cover);cleanup();return ret;}
+    ret=avformat_write_header(output,&options);av_dict_free(&options);if(ret<0){set_error("Metadata header write failed: "+ff_error(ret));free_copied_cover(cover);cleanup();return ret;}
+    ret=write_copied_cover(output,cover);if(ret<0){free_copied_cover(cover);cleanup();return ret;}
     AVPacket* packet=av_packet_alloc();if(!packet){free_copied_cover(cover);cleanup();return AVERROR(ENOMEM);}
     while((ret=av_read_frame(input.get(),packet))>=0){int mapped=packet->stream_index<(int)stream_map.size()?stream_map[packet->stream_index]:-1;if(mapped<0){av_packet_unref(packet);continue;}
         AVStream* in_stream=input->streams[packet->stream_index];AVStream* out_stream=output->streams[mapped];
@@ -571,7 +779,11 @@ int remux_metadata_file(const char* input_path, const char* output_path,
         ret=av_interleaved_write_frame(output,packet);av_packet_unref(packet);if(ret<0)break;
     }
     av_packet_free(&packet);if(ret==AVERROR_EOF)ret=0;if(ret>=0)ret=av_write_trailer(output);
-    free_copied_cover(cover);cleanup();return ret;
+    const bool cover_expected=cover.packet!=nullptr;
+    free_copied_cover(cover);cleanup();
+    if(ret>=0&&cover_expected){ret=verify_copied_cover(output_path);if(ret<0)set_error("Output verification failed: attached cover not found");}
+    if(ret>=0&&!cover_expected)__android_log_print(ANDROID_LOG_WARN,"DSRE-COVER","Verification skipped: cover is not expected (mode=%s)",mode.c_str());
+    return ret;
 }
 
 } // namespace

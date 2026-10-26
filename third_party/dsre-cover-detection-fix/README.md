@@ -1,0 +1,3 @@
+# DSRE cover detection fix
+
+This revision targets DSRE conversion, not metadata editing. A source with no attached picture remains a valid successful conversion. If FFmpeg exposes a source cover in AVStream.attached_pic, it is preserved. If the stream has AV_DISPOSITION_ATTACHED_PIC but attached_pic is empty, the converter reads the first packet from that stream and uses it as a fallback. Silent cover drops caused by conversion errors or an inconclusive avformat_query_codec result were removed: an actually detected source cover must now become an output cover or conversion fails with a concrete DSRE-COVER error. Outputs with no detected source cover skip cover verification and succeed normally.

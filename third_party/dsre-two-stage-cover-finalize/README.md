@@ -1,0 +1,3 @@
+# DSRE two-stage cover finalization
+
+DSRE conversion now has two explicit stages. Stage 1 performs decode, DSP and audio encode into an audio-only intermediate container while copying text metadata. Stage 2 opens that completed audio container, opens the original source independently, detects and converts the source attached picture, then creates a new final container by stream-copying the processed audio and writing the cover packet before audio packets. The intermediate file is always removed. If the source has no cover, Stage 2 creates a valid audio-only final output. If a source cover is detected, final attached-picture verification is mandatory and failure deletes the final output.
