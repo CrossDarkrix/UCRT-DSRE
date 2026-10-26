@@ -16,6 +16,7 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 }
 
 namespace {
@@ -40,6 +41,7 @@ struct CodecCloser { void operator()(AVCodecContext* p) const { if (p) avcodec_f
 struct PacketCloser { void operator()(AVPacket* p) const { if (p) av_packet_free(&p); } };
 struct FrameCloser { void operator()(AVFrame* p) const { if (p) av_frame_free(&p); } };
 struct SwrCloser { void operator()(SwrContext* p) const { if (p) swr_free(&p); } };
+struct SwsCloser { void operator()(SwsContext* p) const { if (p) sws_freeContext(p); } };
 struct FifoCloser { void operator()(AVAudioFifo* p) const { if (p) av_audio_fifo_free(p); } };
 
 struct CopiedCover {
@@ -125,11 +127,31 @@ int convert_cover_to_mjpeg(const AVStream* source, AVPacket** converted_packet,
     converted->color_range=AVCOL_RANGE_JPEG;
     if((ret=av_frame_get_buffer(converted.get(),32))<0)return ret;
     if((ret=av_frame_make_writable(converted.get()))<0)return ret;
-    ret=rgb_to_yuv420p(decoded.get(),converted.get());
-    if(ret==AVERROR(ENOSYS) && decoded->format==AV_PIX_FMT_YUV420P){
-        ret=av_frame_copy(converted.get(),decoded.get());
-    }
-    if(ret<0)return ret;
+    std::unique_ptr<SwsContext,SwsCloser> scaler(
+        sws_getContext(
+            decoded->width,
+            decoded->height,
+            static_cast<AVPixelFormat>(decoded->format),
+            converted->width,
+            converted->height,
+            encoder->pix_fmt,
+            SWS_BICUBIC,
+            nullptr,
+            nullptr,
+            nullptr
+        )
+    );
+    if(!scaler) return AVERROR(EINVAL);
+    const int scaled_height=sws_scale(
+        scaler.get(),
+        decoded->data,
+        decoded->linesize,
+        0,
+        decoded->height,
+        converted->data,
+        converted->linesize
+    );
+    if(scaled_height!=converted->height) return scaled_height<0?scaled_height:AVERROR(EIO);
     converted->pts=0;
     if((ret=avcodec_send_frame(encoder.get(),converted.get()))<0)return ret;
     AVPacket* packet=av_packet_alloc(); if(!packet)return AVERROR(ENOMEM);
