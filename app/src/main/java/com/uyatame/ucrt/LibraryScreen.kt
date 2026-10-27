@@ -8,6 +8,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import com.uyatame.ucrt.player.ExternalMedia
+import com.uyatame.ucrt.appearance.UcrtCard
+import com.uyatame.ucrt.appearance.UcrtSurface
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
 import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyListScope
@@ -246,11 +249,9 @@ private fun SelectionPool(vm: MainViewModel, all: List<LibTrack>) {
  */
 @Composable
 private fun SelectionBar(vm: MainViewModel, modifier: Modifier) {
-    Surface(
+    UcrtSurface(
         modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        shadowElevation = 6.dp,
+        UcrtSurfaceRole.OVERLAY,
     ) {
         Row(Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton({ vm.endSelection() }) { Icon(Icons.Filled.Close, S(R.string.cancel)) }
@@ -422,11 +423,9 @@ private fun LibraryHome(vm: MainViewModel, s: AppSettings) {
             return@LazyVerticalGrid
         }
         item(key = "search", span = full) {
-            Surface(
-                onClick = { vm.libPush("search") },
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            UcrtSurface(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).clickable { vm.libPush("search") },
+                role = UcrtSurfaceRole.CONTROLS,
             ) {
                 Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -487,8 +486,12 @@ private fun AlbumStrip(vm: MainViewModel, list: List<LibAlbum>) {
 /** カテゴリーのアイコン(タップで一覧へ) */
 @Composable
 private fun CategoryTile(icon: ImageVector, label: String, count: String, onClick: () -> Unit) {
+    UcrtSurface(
+        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        UcrtSurfaceRole.CARD,
+    ) {
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
@@ -501,6 +504,7 @@ private fun CategoryTile(icon: ImageVector, label: String, count: String, onClic
             count.ifEmpty { " " }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
+    }
     }
 }
 

@@ -93,6 +93,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -113,6 +114,12 @@ import com.uyatame.ucrt.data.AppSettings
 import com.uyatame.ucrt.data.QUALITY_PRESETS
 import com.uyatame.ucrt.data.presetIndex
 import com.uyatame.ucrt.data.qualityLabel
+import com.uyatame.ucrt.appearance.ProvideUcrtAppearance
+import com.uyatame.ucrt.appearance.UcrtSurface
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
+import com.uyatame.ucrt.appearance.UcrtVisuals
+import com.uyatame.ucrt.appearance.UcrtCard
+import com.uyatame.ucrt.appearance.UcrtNavigationSurface
 import com.uyatame.ucrt.library.ArtLoader
 import com.uyatame.ucrt.player.PlayItem
 import kotlinx.coroutines.Dispatchers
@@ -120,7 +127,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @Composable
-fun AppTheme(mode: Int, dynamic: Boolean, seed: Int, text: Int = 0, content: @Composable () -> Unit) {
+fun AppTheme(mode: Int, dynamic: Boolean, seed: Int, text: Int = 0, appearanceConfig: String = "", content: @Composable () -> Unit) {
     val dark = when (mode) { 1 -> false; 2 -> true; else -> isSystemInDarkTheme() }
     val ctx = LocalContext.current
     val scheme = if (dynamic && android.os.Build.VERSION.SDK_INT >= 31) {
@@ -138,14 +145,22 @@ fun AppTheme(mode: Int, dynamic: Boolean, seed: Int, text: Int = 0, content: @Co
             onSurfaceVariant = androidx.compose.ui.graphics.lerp(c, scheme.surface, 0.3f),
         )
     }
-    MaterialTheme(colorScheme = withText, content = content)
+    MaterialTheme(colorScheme = withText) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = withText.background,
+            contentColor = withText.onBackground,
+        ) {
+            ProvideUcrtAppearance(appearanceConfig, withText, content)
+        }
+    }
 }
 
 @Composable
 fun App(vm: MainViewModel) {
     val s by vm.settings.collectAsState()
     val sp: com.uyatame.ucrt.spotify.SpotifyViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-    AppTheme(s.themeMode, s.dynamicColor, s.themeColor, s.textColor) {
+    AppTheme(s.themeMode, s.dynamicColor, s.themeColor, s.textColor, s.appearanceConfig) {
         val view = LocalView.current
         val keep = vm.busy && s.keepScreenOn
         DisposableEffect(keep) {
@@ -252,9 +267,13 @@ fun App(vm: MainViewModel) {
         Box(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxSize()) {
         if (land) {
+            UcrtSurface(
+                Modifier.fillMaxHeight(),
+                UcrtSurfaceRole.NAVIGATION,
+            ) {
             NavigationRail(
                 Modifier.fillMaxHeight(),
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                containerColor = Color.Transparent,
                 windowInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
                     .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start),
             ) {
@@ -264,9 +283,12 @@ fun App(vm: MainViewModel) {
                 }
                 Spacer(Modifier.weight(1f))
             }
+            }
         }
         Scaffold(
             modifier = Modifier.weight(1f),
+            containerColor = UcrtVisuals.background.containerColor,
+            contentColor = MaterialTheme.colorScheme.onBackground,
             // 全画面の再生画面を出している間は、お知らせをその上に出す(下の重ね書きを参照)
             snackbarHost = { if (!playerOverlay) SnackbarHost(snackHost) },
             // 横向き: 左の端はレールが受け持つので、中身は上・右・下だけ避ける
@@ -288,9 +310,11 @@ fun App(vm: MainViewModel) {
                     // Spotify アプリで再生中の曲(Spotify の機能を使っているとき。ストリーミングのタブでは、一時停止中でも出す)
                     if (s.spotifyEnabled && sp.connected && sp.hasTrack && (tab == TAB_STREAMING || !sp.paused)) SpotifyBar(sp) { showSpotifyPlayer = true }
                     if (!land) {
-                        NavigationBar {
-                            tabs.forEach { (icon, label, i) ->
-                                NavigationBarItem(tab == i, { onTab(i) }, { Icon(icon, null) }, label = { Text(label) })
+                        UcrtNavigationSurface(Modifier.fillMaxWidth()) {
+                            NavigationBar(containerColor = Color.Transparent) {
+                                tabs.forEach { (icon, label, i) ->
+                                    NavigationBarItem(tab == i, { onTab(i) }, { Icon(icon, null) }, label = { Text(label) })
+                                }
                             }
                         }
                     }
@@ -434,7 +458,7 @@ fun PageHeader(title: String, onBack: () -> Unit) {
 
 @Composable
 fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
+    UcrtSurface(Modifier.fillMaxWidth(), UcrtSurfaceRole.CARD) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             content()
@@ -669,7 +693,7 @@ fun RipBar(vm: MainViewModel, onOpen: () -> Unit) {
             dismissButton = { TextButton({ confirmCancel = false }) { Text(S(R.string.continue_label)) } },
         )
     }
-    Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+    UcrtSurface(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen), role = UcrtSurfaceRole.CONTROLS) {
         Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(AppIcons.Download, null, Modifier.size(20.dp))
@@ -699,7 +723,7 @@ fun MiniPlayer(vm: MainViewModel, onOpen: () -> Unit) {
     val shift = remember { Animatable(0f) }
     val density = LocalDensity.current
     val limit = with(density) { 72.dp.toPx() }
-    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+    UcrtSurface(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen), role = UcrtSurfaceRole.PLAYER) {
         Column {
             LinearProgressIndicator(
                 progress = { if (p.durationMs > 0) (p.positionMs.toFloat() / p.durationMs).coerceIn(0f, 1f) else 0f },

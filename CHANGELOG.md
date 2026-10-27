@@ -1,3 +1,26 @@
+## Phase 5B Real Component Migration
+
+- Replaced the color-scheme-only Phase 5B approach with explicit UCRT Glass containers.
+- Migrated library search, category tiles, selection overlay, track rows, album cards, navigation, Mini Player, ripping status, DSRE cards, audio cards, and Spotify cards.
+- Added ambient theme-color depth layers so transparency and highlights are visibly distinguishable.
+- Preserved overlay theming for dialogs and bottom sheets and kept Standard as the opaque fallback.
+
+## Phase 5B Global Glass Integration
+
+- Applied appearance colors and shapes globally through a nested Material 3 theme.
+- Integrated library, navigation, player, playlists, dialogs, bottom sheets, settings, DSRE, metadata, CD, streaming, external media, Cast, equalizer, and USB/audio screens without changing their functional logic.
+- Connected component-group transparency to Material surface roles while preserving light/dark on-colors.
+- Added a solid base backdrop beneath translucent surfaces.
+- Updated the CMake policy range and standardized archive timestamps for Termux/Ninja stability.
+
+## Phase 5A Appearance Foundation
+
+- Added Standard, Translucent, Lightweight Glass, Liquid Glass, and Custom appearance presets.
+- Added common transparency, blur, border, gloss, corner, depth, animation, and power-save settings.
+- Added per-component overrides for cards/lists, controls, overlays, navigation, player, and visualization panels.
+- Added Material 3 extension tokens, reusable UCRT visual components, realtime preview, safe fallback, and reset.
+- Applied the new foundation to Settings surfaces, root background, and Mini Player without modifying audio, USB DAC, DSRE, metadata, or library processing.
+
 # 変更履歴
 
 ## v0.6.0 (2026-10-23)

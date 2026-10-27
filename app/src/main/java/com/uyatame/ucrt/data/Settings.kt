@@ -164,6 +164,8 @@ data class AppSettings(
     val dsreContext: Float = 0.40f,
     val dsreFormat: String = "WAV",
     /** Selected launcher activity alias. */
+    /** Phase 5A appearance settings serialized atomically as JSON. */
+    val appearanceConfig: String = "",
     val launcherIcon: String = "default",
 )
 
@@ -289,6 +291,7 @@ object Keys {
     val dsreDynamic = androidx.datastore.preferences.core.floatPreferencesKey("dsreDynamic")
     val dsreContext = androidx.datastore.preferences.core.floatPreferencesKey("dsreContext")
     val dsreFormat = stringPreferencesKey("dsreFormat")
+    val appearanceConfig = stringPreferencesKey("appearanceConfig")
     val launcherIcon = stringPreferencesKey("launcherIcon")
 }
 
@@ -380,6 +383,7 @@ class SettingsRepository(private val context: Context) {
             dsreDynamic = (p[Keys.dsreDynamic] ?: d.dsreDynamic).coerceIn(0f, 1f),
             dsreContext = (p[Keys.dsreContext] ?: d.dsreContext).coerceIn(0f, 1f),
             dsreFormat = p[Keys.dsreFormat] ?: d.dsreFormat,
+            appearanceConfig = p[Keys.appearanceConfig] ?: d.appearanceConfig,
             launcherIcon = p[Keys.launcherIcon] ?: d.launcherIcon,
         )
     }

@@ -27,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -81,6 +80,9 @@ import com.uyatame.ucrt.data.outputMode
 import com.uyatame.ucrt.data.AudioFormat
 import com.uyatame.ucrt.data.Keys
 import com.uyatame.ucrt.data.MP3_RATES
+import com.uyatame.ucrt.appearance.AppearanceSettingsContent
+import com.uyatame.ucrt.appearance.UcrtSurface
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -97,6 +99,7 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, page: Int, onPage: (Int) -
         5 -> SettingsPage(S(R.string.display), back) { DisplayPage(vm, s) }
         9 -> SettingsPage(S(R.string.player_screen), back) { PlayerScreenPage(vm, s) }
         10 -> SettingsPage(if (java.util.Locale.getDefault().language == "ja") "タグの編集" else "Edit tags", back) { MetadataEditorScreen() }
+        11 -> SettingsPage(if (java.util.Locale.getDefault().language == "ja") "外観" else "Appearance", back) { AppearanceSettingsContent(vm, s) }
         6 -> LogPage(vm, s, back)
         7 -> LicensePage(vm, s, back)
         8 -> SettingsPage(SoundPage.title(SoundPage.MAIN), back) { SoundMain(vm, s) { onPage(80 + it) } }
@@ -164,7 +167,7 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
         ScreenHeader(S(R.string.settings))
         // ---- CD の取り込み ----
         GroupLabel(S(R.string.settings_group_rip))
-        Card(Modifier.fillMaxWidth()) {
+        SettingsGlassCard(Modifier.fillMaxWidth()) {
             CategoryRow(
                 AppIcons.Download, S(R.string.saving_ripping),
                 folderLabel(s.outputUri) + S(R.string.auto_track_info) + if (s.autoMeta) "ON" else "OFF",
@@ -180,7 +183,7 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
         }
         // ---- 音楽プレーヤー ----
         GroupLabel(S(R.string.settings_group_player))
-        Card(Modifier.fillMaxWidth()) {
+        SettingsGlassCard(Modifier.fillMaxWidth()) {
             CategoryRow(
                 AppIcons.Library, S(R.string.library),
                 S(R.string.folders_add_music_from_your, folders.coerceAtLeast(0)),
@@ -200,7 +203,13 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
         }
         // ---- 全般 ----
         GroupLabel(S(R.string.settings_group_general))
-        Card(Modifier.fillMaxWidth()) {
+        SettingsGlassCard(Modifier.fillMaxWidth()) {
+            CategoryRow(
+                AppIcons.Smartphone,
+                if (java.util.Locale.getDefault().language == "ja") "外観" else "Appearance",
+                if (java.util.Locale.getDefault().language == "ja") "プリセット・透明度・Glass・部品別設定" else "Presets, transparency, Glass, and component styles",
+            ) { onPage(11) }
+            HorizontalDivider()
             CategoryRow(
                 AppIcons.Smartphone, S(R.string.display),
                 listOf(S(R.string.auto), S(R.string.light), S(R.string.dark))[s.themeMode.coerceIn(0, 2)] +
@@ -221,7 +230,7 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
             ) { onPage(7) }
         }
         // ---- USB DAC の解放・アプリの終了 ----
-        Card(Modifier.fillMaxWidth()) {
+        SettingsGlassCard(Modifier.fillMaxWidth()) {
             if (vm.usbDacInUse) {
                 CategoryRow(AppIcons.Usb, S(R.string.release_usb_dac), S(R.string.release_usb_dac_desc)) { vm.releaseUsbDac() }
                 HorizontalDivider()
@@ -230,6 +239,16 @@ private fun MainSettings(vm: MainViewModel, s: AppSettings, onPage: (Int) -> Uni
                 vm.quitApp { (ctx as? android.app.Activity)?.finishAndRemoveTask() }
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsGlassCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    UcrtSurface(modifier, UcrtSurfaceRole.CARD) {
+        Column { content() }
     }
 }
 
@@ -514,7 +533,7 @@ private fun LauncherIconPicker(selectedId: String, onSelected: (String) -> Unit)
         ?: LauncherIconManager.options.first()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(S(R.string.app_icon), style = MaterialTheme.typography.titleSmall)
-        Card(Modifier.fillMaxWidth().clickable { open = true }) {
+        SettingsGlassCard(Modifier.fillMaxWidth().clickable { open = true }) {
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -545,7 +564,7 @@ private fun LauncherIconPicker(selectedId: String, onSelected: (String) -> Unit)
             ) {
                 LauncherIconManager.options.forEach { option ->
                     val chosen = option.id == selected.id
-                    Card(
+                    SettingsGlassCard(
                         Modifier.fillMaxWidth().clickable {
                             onSelected(option.id)
                             open = false
@@ -813,7 +832,7 @@ private fun LicensePage(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
                 S(R.string.licenses_2), style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 4.dp, top = 4.dp),
             )
-            Card(Modifier.fillMaxWidth()) {
+            SettingsGlassCard(Modifier.fillMaxWidth()) {
                 LICENSES.forEachIndexed { i, l ->
                     if (i > 0) HorizontalDivider()
                     ListItem(
@@ -829,7 +848,7 @@ private fun LicensePage(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
                 S(R.string.included_license_texts), style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 4.dp, top = 4.dp),
             )
-            Card(Modifier.fillMaxWidth()) {
+            SettingsGlassCard(Modifier.fillMaxWidth()) {
                 LICENSES.filter { it.asset != null }.distinctBy { it.asset }.forEachIndexed { i, l ->
                     if (i > 0) HorizontalDivider()
                     ListItem(

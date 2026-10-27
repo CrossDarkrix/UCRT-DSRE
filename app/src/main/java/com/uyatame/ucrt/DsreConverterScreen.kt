@@ -1,6 +1,9 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.uyatame.ucrt
 
+import com.uyatame.ucrt.appearance.UcrtCard
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -210,12 +213,12 @@ private fun presetValues(p:DsrePreset)=when(p){
     WideCenter{Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
         Text(S(R.string.dsre_title),style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Bold)
         Text(S(R.string.dsre_description),color=MaterialTheme.colorScheme.onSurfaceVariant)
-        Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        UcrtCard(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             Text(tr("保存先設定","Output settings"),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
             Text(if(outputTreeText.isBlank())tr("保存先が設定されていません","Output folder is not set") else tr("保存先: $outputName","Output: $outputName"),maxLines=2,overflow=TextOverflow.Ellipsis)
             OutlinedButton({outputFolderPicker.launch(outputTreeText.takeIf{it.isNotBlank()}?.let(Uri::parse))},enabled=!converting,modifier=Modifier.fillMaxWidth()){Text(if(outputTreeText.isBlank())tr("保存先を選択","Select output folder") else tr("保存先を変更","Change output folder"))}
         }}
-        Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        UcrtCard(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             Text(tr("変換キュー","Conversion queue"),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 OutlinedButton({filesPicker.launch(arrayOf("audio/*","application/octet-stream"))},enabled=!converting,modifier=Modifier.weight(1f)){Text(tr("ファイル追加","Add files"))}
@@ -234,7 +237,7 @@ private fun presetValues(p:DsrePreset)=when(p){
                 }
             }
         }}
-        Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        UcrtCard(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
             Text(S(R.string.dsre_settings),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
             if(userPresets.isNotEmpty()) ChoiceField(tr("保存プリセット","Saved preset"),selectedUserPreset,userPresets.map{it.name},{it.ifBlank{tr("選択してください","Select")}}){name->userPresets.firstOrNull{it.name==name}?.let(::applyUserPreset)}
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -250,7 +253,7 @@ private fun presetValues(p:DsrePreset)=when(p){
             NormalizedSlider(S(R.string.dsre_context),context){context=it;custom();vm.set(Keys.dsreContext,it)}
             ChoiceField(S(R.string.dsre_output_format),DsreOutputFormat.valueOf(format),DsreOutputFormat.entries.toList(),{it.name}){format=it.name;vm.set(Keys.dsreFormat,format)}
         }}
-        Card(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        UcrtCard(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             batchMessage?.let{Text(it,color=MaterialTheme.colorScheme.onSurfaceVariant)}
             batchError?.let{Text(it,color=MaterialTheme.colorScheme.error)}
             if(converting)Button({DsreConversionCoordinator.cancel(app)},Modifier.fillMaxWidth()){Text(tr("一括変換をキャンセル","Cancel batch"))}

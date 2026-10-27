@@ -2,6 +2,9 @@
 
 package com.uyatame.ucrt
 
+import com.uyatame.ucrt.appearance.UcrtSurface
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
+
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -140,11 +143,12 @@ fun TrackRow(
     // 曲を選んでいる間は、タップ・長押しで選ぶ(再生しない)
     val selected: Boolean? = if (vm.selecting) vm.isSelected(t.uri) else null
     val tap: () -> Unit = if (selected != null) ({ vm.toggleSelected(t.uri) }) else onClick
+    UcrtSurface(
+        modifier.fillMaxWidth().combinedClickable(onClick = tap, onLongClick = { if (selected != null) tap() else vm.showTrackMenu(t, playlist) }),
+        if (playing) UcrtSurfaceRole.CONTROLS else UcrtSurfaceRole.LIST_ITEM,
+    ) {
     Row(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(if (playing) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-            .combinedClickable(onClick = tap, onLongClick = { if (selected != null) tap() else vm.showTrackMenu(t, playlist) })
-            .padding(start = 8.dp, top = 6.dp, bottom = 6.dp),
+        Modifier.fillMaxWidth().padding(start = 8.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (handle != null) handle()
@@ -191,15 +195,17 @@ fun TrackRow(
             Icon(Icons.Filled.MoreVert, S(R.string.more_options), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+    }
 }
 
 /** アルバムのタイル(グリッド表示)。長押しで操作メニュー */
 @Composable
 fun AlbumTile(vm: MainViewModel, a: LibAlbum, modifier: Modifier = Modifier, sub: String? = null) {
-    Column(
-        modifier.clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = { vm.libPush("album:" + a.key) }, onLongClick = { vm.menuAlbum = a }),
+    UcrtSurface(
+        modifier.combinedClickable(onClick = { vm.libPush("album:" + a.key) }, onLongClick = { vm.menuAlbum = a }),
+        UcrtSurfaceRole.CARD,
     ) {
+    Column(Modifier.fillMaxWidth()) {
         Box {
             ArtImage(a.key, a.first.uri, a.first.coverUri, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
             val q = Quality.classOf(a)
@@ -221,15 +227,18 @@ fun AlbumTile(vm: MainViewModel, a: LibAlbum, modifier: Modifier = Modifier, sub
             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
         )
     }
+    }
 }
 
 /** アルバムの行(リスト表示) */
 @Composable
 fun AlbumListRow(vm: MainViewModel, a: LibAlbum, sub: String? = null) {
+    UcrtSurface(
+        Modifier.fillMaxWidth().combinedClickable(onClick = { vm.libPush("album:" + a.key) }, onLongClick = { vm.menuAlbum = a }),
+        UcrtSurfaceRole.LIST_ITEM,
+    ) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = { vm.libPush("album:" + a.key) }, onLongClick = { vm.menuAlbum = a })
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ArtImage(a.key, a.first.uri, a.first.coverUri, Modifier.size(56.dp), 8.dp, 56.dp)
@@ -247,6 +256,7 @@ fun AlbumListRow(vm: MainViewModel, a: LibAlbum, sub: String? = null) {
             }
         }
         IconButton({ vm.playAlbum(a, 0) }) { Icon(Icons.Filled.PlayArrow, S(R.string.play)) }
+    }
     }
 }
 

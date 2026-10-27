@@ -1,5 +1,8 @@
 package com.uyatame.ucrt
 
+import com.uyatame.ucrt.appearance.UcrtCard
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -174,11 +176,9 @@ private fun NowOutputCard(s: AppSettings) {
     val dev = AudioEngine.output
     val st = AudioEngine.outputStatus
     val perfect = AudioEngine.bitPerfectActive
-    Card(
+    UcrtCard(
         Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (perfect) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-        ),
+        if (perfect) UcrtSurfaceRole.CONTROLS else UcrtSurfaceRole.CARD,
     ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -216,7 +216,7 @@ private fun SoundGroup(title: String, content: @Composable ColumnScope.() -> Uni
             title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(start = 8.dp, bottom = 6.dp, top = 4.dp),
         )
-        Card(Modifier.fillMaxWidth()) { Column(content = content) }
+        UcrtCard(Modifier.fillMaxWidth()) { Column(content = content) }
     }
 }
 

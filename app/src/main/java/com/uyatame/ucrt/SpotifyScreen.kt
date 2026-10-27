@@ -2,6 +2,9 @@
 
 package com.uyatame.ucrt
 
+import com.uyatame.ucrt.appearance.UcrtCard
+import com.uyatame.ucrt.appearance.UcrtSurfaceRole
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -44,7 +47,6 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -222,7 +224,7 @@ private fun SpotifySetup(sp: SpotifyViewModel, onBack: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (!installed) {
-            Card(Modifier.fillMaxWidth()) {
+            UcrtCard(Modifier.fillMaxWidth()) {
                 Text(S(R.string.spotify_app_is_not_installed), Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
             }
         }
@@ -329,7 +331,7 @@ private fun SpotifyHome(sp: SpotifyViewModel, play: SpPlay, onBack: () -> Unit) 
         }
         if (sp.needsReauth) {
             item {
-                Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                UcrtCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(S(R.string.spotify_please_allow_again), style = MaterialTheme.typography.bodyMedium)
                         Button(login) { Text(S(R.string.spotify_log_in_again)) }
