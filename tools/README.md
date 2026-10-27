@@ -50,9 +50,11 @@ export ANDROID_NDK_TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-a
 
 # Termuxの場合
 
-```unzip ffmpeg-android-audio-metadata-builder_v9.0.2-termux.zip && cd ffmpeg-android-audio-metadata-builder```
-
+```bash
+unzip ffmpeg-android-audio-metadata-builder_v9.0.2-termux.zip && cd ffmpeg-android-audio-metadata-builder
 ```
+
+```bash
 chmod +x termux-build.sh
 ./termux-build.sh --clean --jobs 4
 ```
