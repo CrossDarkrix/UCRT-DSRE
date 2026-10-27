@@ -153,16 +153,13 @@ class DsreConversionService : Service() {
                     },
                 )
 
-                // Let ART and other coroutines run after all strong references for this track
-                // have been cleared. Every fourth completed item also requests a full GC.
+                // The decoder, DSP and converter references are now unreachable. Give
+                // MediaCodec service and ART a quiet boundary before allocating the next track.
                 if (index + 1 < request.jobs.size) {
                     yield()
-                    if ((index + 1) % 4 == 0) {
-                        Runtime.getRuntime().gc()
-                        delay(150L)
-                    } else {
-                        delay(50L)
-                    }
+                    Runtime.getRuntime().gc()
+                    if ((index + 1) % 4 == 0) runCatching { System.runFinalization() }
+                    delay(if ((index + 1) % 4 == 0) 350L else 200L)
                 }
             }
             stopCompleted("DSRE conversion completed")

@@ -26,6 +26,50 @@ class DsreFileConverter(private val context: Context) {
      * by convert()/decode() finally blocks; this method severs the remaining lifecycle state. */
     fun release() { cancelled = false }
 
+    private class DecoderStateFailure(message: String, cause: Throwable) : IOException(message, cause)
+
+    private fun isRetryableDecoderFailure(error: Throwable): Boolean {
+        if (error is DecoderStateFailure) return true
+        if (error is MediaCodec.CodecException) return error.isRecoverable || error.isTransient
+        val message = error.message.orEmpty()
+        return error is IllegalStateException && (
+            message.contains("Released state", ignoreCase = true) ||
+            message.contains("Executing state", ignoreCase = true) ||
+            message.contains("queueInputBuffer", ignoreCase = true) ||
+            message.contains("dequeueInputBuffer", ignoreCase = true) ||
+            message.contains("dequeueOutputBuffer", ignoreCase = true)
+        )
+    }
+
+    private fun decodeToWavWithRetry(
+        input: Uri,
+        temp: File,
+        parameters: DsreParameters,
+        onProgress: (Progress) -> Unit,
+    ): Long {
+        var lastFailure: Throwable? = null
+        repeat(2) { attempt ->
+            checkCancelled()
+            temp.delete()
+            try {
+                WavWriter(temp, parameters.targetSampleRate, 2).use { writer ->
+                    return decode(input, parameters, writer, onProgress)
+                }
+            } catch (error: Throwable) {
+                if (!isRetryableDecoderFailure(error) || attempt == 1 || cancelled) throw error
+                lastFailure = error
+                onProgress(Progress(0f, "Restarting audio decoder"))
+                Runtime.getRuntime().gc()
+                runCatching { System.runFinalization() }
+                try { Thread.sleep(300L) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedException("Conversion cancelled")
+                }
+            }
+        }
+        throw lastFailure ?: IOException("Audio decoder retry failed")
+    }
+
     fun convert(input: Uri, output: Uri, parameters: DsreParameters, outputFormat: String, onProgress: (Progress) -> Unit): Result {
         cancelled = false
         val temp = File.createTempFile("dsre_", ".wav", context.cacheDir)
@@ -46,9 +90,7 @@ class DsreFileConverter(private val context: Context) {
         var frames = 0L
         try {
             onProgress(Progress(0f, "Opening input"))
-            WavWriter(temp, parameters.targetSampleRate, 2).use { writer ->
-                frames = decode(input, parameters, writer, onProgress)
-            }
+            frames = decodeToWavWithRetry(input, temp, parameters, onProgress)
             checkCancelled()
             val completed = if (encoded == null) temp else {
                 onProgress(Progress(.97f, "Encoding $outputFormat"))
@@ -118,21 +160,36 @@ class DsreFileConverter(private val context: Context) {
             while (!outputDone) {
                 checkCancelled()
                 if (!inputDone) {
-                    val index = decoder.dequeueInputBuffer(timeoutUs)
-                    if (index >= 0) {
-                        val buffer = decoder.getInputBuffer(index) ?: throw IOException("Decoder input buffer unavailable")
-                        val size = extractor.readSampleData(buffer, 0)
-                        if (size < 0) {
-                            decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, extractor.sampleFlags)
-                            extractor.advance()
+                    try {
+                        val index = decoder.dequeueInputBuffer(timeoutUs)
+                        if (index >= 0) {
+                            checkCancelled()
+                            val buffer = decoder.getInputBuffer(index) ?: throw IOException("Decoder input buffer unavailable")
+                            buffer.clear()
+                            val size = extractor.readSampleData(buffer, 0)
+                            if (size < 0) {
+                                decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, extractor.sampleFlags)
+                                extractor.advance()
+                            }
                         }
+                    } catch (error: MediaCodec.CodecException) {
+                        throw DecoderStateFailure("MediaCodec input codec failure: ${error.diagnosticInfo}", error)
+                    } catch (error: IllegalStateException) {
+                        throw DecoderStateFailure("MediaCodec input state failure: ${error.message}", error)
                     }
                 }
 
-                when (val index = decoder.dequeueOutputBuffer(info, timeoutUs)) {
+                val outputIndex = try {
+                    decoder.dequeueOutputBuffer(info, timeoutUs)
+                } catch (error: MediaCodec.CodecException) {
+                    throw DecoderStateFailure("MediaCodec output codec failure: ${error.diagnosticInfo}", error)
+                } catch (error: IllegalStateException) {
+                    throw DecoderStateFailure("MediaCodec output state failure: ${error.message}", error)
+                }
+                when (val index = outputIndex) {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val outFormat = decoder.outputFormat
                         sourceRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -146,26 +203,29 @@ class DsreFileConverter(private val context: Context) {
                     }
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                     else -> if (index >= 0) {
-                        if (info.size > 0) {
-                            val buffer = decoder.getOutputBuffer(index) ?: throw IOException("Decoder output buffer unavailable")
-                            buffer.position(info.offset); buffer.limit(info.offset + info.size)
-                            val interleaved = pcmToStereo(buffer.slice().order(ByteOrder.nativeOrder()), pcmEncoding, sourceChannels)
-                            val sourceFrames = interleaved.size / 2
-                            val converted = resampler?.let { rs ->
-                                val dst = FloatArray(max(2, rs.maxOut(sourceFrames) * 2))
-                                val count = rs.process(interleaved, sourceFrames, dst)
-                                dst.copyOf(count * 2)
-                            } ?: interleaved
-                            val channelFirst = deinterleave(converted)
-                            val processed = (dsp ?: DsreDspEngine(p.targetSampleRate, 2, p).also { dsp = it }).process(channelFirst)
-                            writer.write(processed)
-                            outFrames += processed[0].size
-                            lastPts = info.presentationTimeUs
-                            val fraction = if (durationUs > 0) (lastPts.toDouble() / durationUs).toFloat().coerceIn(0f, .96f) else 0f
-                            onProgress(Progress(fraction, "Converting audio"))
+                        try {
+                            if (info.size > 0) {
+                                val buffer = decoder.getOutputBuffer(index) ?: throw IOException("Decoder output buffer unavailable")
+                                buffer.position(info.offset); buffer.limit(info.offset + info.size)
+                                val interleaved = pcmToStereo(buffer.slice().order(ByteOrder.nativeOrder()), pcmEncoding, sourceChannels)
+                                val sourceFrames = interleaved.size / 2
+                                val converted = resampler?.let { rs ->
+                                    val dst = FloatArray(max(2, rs.maxOut(sourceFrames) * 2))
+                                    val count = rs.process(interleaved, sourceFrames, dst)
+                                    if (count * 2 == dst.size) dst else dst.copyOf(count * 2)
+                                } ?: interleaved
+                                val channelFirst = deinterleave(converted)
+                                val processed = (dsp ?: DsreDspEngine(p.targetSampleRate, 2, p).also { dsp = it }).process(channelFirst)
+                                writer.write(processed)
+                                outFrames += processed[0].size
+                                lastPts = info.presentationTimeUs
+                                val fraction = if (durationUs > 0) (lastPts.toDouble() / durationUs).toFloat().coerceIn(0f, .96f) else 0f
+                                onProgress(Progress(fraction, "Converting audio"))
+                            }
+                            outputDone = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                        } finally {
+                            runCatching { decoder.releaseOutputBuffer(index, false) }
                         }
-                        outputDone = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                        decoder.releaseOutputBuffer(index, false)
                     }
                 }
             }
@@ -185,10 +245,13 @@ class DsreFileConverter(private val context: Context) {
             runCatching { dsp?.reset() }
             dsp = null
             resampler = null
-            runCatching { codec?.stop() }
-            runCatching { codec?.release() }
+            val closingCodec = codec
             codec = null
-            extractor.release()
+            if (closingCodec != null) {
+                runCatching { closingCodec.stop() }
+                runCatching { closingCodec.release() }
+            }
+            runCatching { extractor.release() }
         }
     }
 
