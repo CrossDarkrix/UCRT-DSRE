@@ -8,6 +8,7 @@ pkg install -y python make pkg-config git curl wget tar xz-utils cmake ninja
 ```
 
 NDKを [ここ](https://github.com/HomuHomu833/android-ndk-custom/releases) からダウンロードしておく
+
 SDKは [ここ](https://github.com/HomuHomu833/android-sdk-custom/releases) からダウンロード
 
 ## 以下を任意の名前のshファイルにして実行しておく。
