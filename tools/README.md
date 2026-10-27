@@ -38,7 +38,8 @@ chmod 755 "$SDK_CMAKE/cmake" "$SDK_CMAKE/ninja
 ```
 
 例: ```bash
-chmod +x move_ninja_cmake && ./move_ninja_cmake```
+chmod +x move_ninja_cmake && ./move_ninja_cmake
+```
 
 先ほどダウンロードした NDK, SDKを $HOME直下にそれぞれ android-ndk, android-sdk として配置しておく。
 
