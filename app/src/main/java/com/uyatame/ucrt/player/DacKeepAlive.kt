@@ -58,6 +58,18 @@ object DacKeepAlive {
         runCatching { ctx.stopService(Intent(ctx, DacKeepAliveService::class.java)) }
     }
 
+    /** Stops the keep-alive AudioTrack synchronously before USB ownership is closed. */
+    fun forceStopNow(ctx: Context) {
+        val service = DacKeepAliveService.current
+        if (service != null) {
+            service.shutdownImmediately()
+        } else {
+            running = false
+            activeDevice = ""
+            stop(ctx)
+        }
+    }
+
     /** 起こしておく機器を選ぶ */
     internal fun pick(devices: Array<AudioDeviceInfo>): AudioDeviceInfo? {
         val usb = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
@@ -96,6 +108,7 @@ class DacKeepAliveService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        current = this
         am = getSystemService(AudioManager::class.java)
     }
 
@@ -119,13 +132,26 @@ class DacKeepAliveService : Service() {
     }
 
     override fun onDestroy() {
+        shutdownResources()
+        if (current === this) current = null
+        AudioEngine.log("dac keep-alive: stopped")
+        super.onDestroy()
+    }
+
+    private fun shutdownResources() {
         main.removeCallbacks(poll)
         runCatching { am.unregisterAudioDeviceCallback(callback) }
         stopSilence()
+        device = null
         DacKeepAlive.running = false
         DacKeepAlive.activeDevice = ""
-        AudioEngine.log("dac keep-alive: stopped")
-        super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    internal fun shutdownImmediately() {
+        shutdownResources()
+        runCatching { stopForeground(true) }
+        stopSelf()
     }
 
     /** 対象の機器を選び直して、無音を流す先を合わせる */
@@ -216,6 +242,7 @@ class DacKeepAliveService : Service() {
     }
 
     companion object {
+        @Volatile internal var current: DacKeepAliveService? = null
         const val ID = 3
     }
 }

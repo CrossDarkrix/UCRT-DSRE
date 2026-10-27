@@ -608,7 +608,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var quitting = false
 
     /**
-     * アプリを終了する。再生を止め、USB DAC を Android に返し(返さずに終わると、ほかのアプリの音が USB DAC から出なくなる)、
+     * アプリを終了する。再生を止め、USB DAC の転送と接続を終了用に論理切断し、
      * 続きと設定を保存してから、通知・サービスを止めてプロセスを終える。finish: 画面を閉じる(通知から終了するときは null)
      */
     fun quitApp(finish: (() -> Unit)?) {
@@ -618,18 +618,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         writeResume()
         resumeReady = false
         player.onStateChanged = null
+        // Exit-only mode must be armed before player.release(), because AudioEngine may
+        // close the USB device from its own cleanup thread.
+        com.uyatame.ucrt.player.usb.UsbDac.prepareForProcessExit()
+        runCatching { com.uyatame.ucrt.player.DacKeepAlive.forceStopNow(ctx) }
         player.release()
         runCatching { com.uyatame.ucrt.player.cast.CastManager.disconnect() }
-        // DAC を返すのは確実に終えてから終了する(別のスレッドに任せると、終了に間に合わないことがある)
-        runCatching { com.uyatame.ucrt.player.usb.UsbDac.close(reattach = true) }
-        runCatching { com.uyatame.ucrt.player.DacKeepAlive.stop(ctx) }
+        // Do not reconnect Android's USB-audio kernel driver during full exit. Release
+        // interfaces and UsbDeviceConnection first, then terminate the process.
+        runCatching { com.uyatame.ucrt.player.usb.UsbDac.forceEjectForProcessExit() }
         closeAsync(drive)
         drive = null
         store.flush()
         KeepAliveService.hide(ctx)
         finish?.invoke()
         // 画面を閉じ終えてから、プロセスごと終える(サービスなどが残って DAC を握り続けないように)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 500)
     }
 
     override fun onCleared() {

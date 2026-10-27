@@ -41,10 +41,12 @@ class KeepAliveService : Service() {
             ACTION_NEXT -> MediaBridge.player?.next()
             ACTION_PREV -> MediaBridge.player?.prev()
             ACTION_QUIT -> {
-                // アプリを終了する(USB DAC を Android に返してから)
+                // アプリを終了する(USB DAC を論理切断してから)
                 val q = MediaBridge.quit
                 if (q != null) q() else {
-                    runCatching { com.uyatame.ucrt.player.usb.UsbDac.close(reattach = true) }
+                    com.uyatame.ucrt.player.usb.UsbDac.prepareForProcessExit()
+                    runCatching { com.uyatame.ucrt.player.DacKeepAlive.forceStopNow(this) }
+                    runCatching { com.uyatame.ucrt.player.usb.UsbDac.forceEjectForProcessExit() }
                     stopSelf()
                     android.os.Process.killProcess(android.os.Process.myPid())
                 }

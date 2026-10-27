@@ -57,15 +57,25 @@ object UsbStabilizer {
     }
 
     fun stop() {
+        stopAndAwait(0L)
+    }
+
+    /** Process-exit path: stop the Android AudioTrack helper and optionally wait until
+     * its worker has left AudioTrack.write() and released the track. */
+    fun stopAndAwait(timeoutMs: Long = 800L) {
+        var worker: Thread? = null
         synchronized(lock) {
-            if (!running) return
             running = false
             runCatching { track?.pause(); track?.flush() }
-            silence?.interrupt()
+            worker = silence
+            worker?.interrupt()
             silence = null
             runCatching { wake?.takeIf { it.isHeld }?.release() }
             wake = null
             main.post { Choreographer.getInstance().removeFrameCallback(frame) }
+        }
+        if (timeoutMs > 0L && worker != null && worker !== Thread.currentThread()) {
+            runCatching { worker.join(timeoutMs) }
         }
     }
 

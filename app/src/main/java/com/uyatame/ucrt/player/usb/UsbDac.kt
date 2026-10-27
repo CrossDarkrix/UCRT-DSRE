@@ -41,6 +41,11 @@ internal class DacFormat(val rate: Int, val channels: Int, val subslot: Int, val
  * 使用中は DAC を独占する(通知音なども DAC からは鳴らない)。
  */
 object UsbDac {
+    /** During full app exit, do not reconnect Android's kernel USB-audio driver.
+     * This is the closest operation available to a normal app to a logical eject;
+     * the USB plug remains physically connected and powered. */
+    @Volatile private var processExitEject = false
+
     private const val ACTION_PERMISSION = "com.uyatame.ucrt.DAC_PERMISSION"
     private val main = Handler(Looper.getMainLooper())
 
@@ -658,19 +663,20 @@ object UsbDac {
     /** 指定の世代のまま開いているときだけ閉じる */
     fun closeIfGen(gen: Int) {
         synchronized(lock) {
-            if (gen == openGen) close(reattach = true)
+            if (gen == openGen) close(reattach = !processExitEject)
         }
     }
 
     /** DAC を手放す。reattach なら Android の USB オーディオに戻す */
     fun close(reattach: Boolean = true) = synchronized(lock) {
+        val shouldReattach = reattach && !processExitEject
         val c = conn
         stopStream()
         if (c != null) {
             suppressNoisy()
             val fd = c.fileDescriptor
             for (ui in claimed) runCatching { c.releaseInterface(ui) }
-            if (reattach) for (ui in claimed) Usbfs.reconnectKernelDriver(fd, ui.id)
+            if (shouldReattach) for (ui in claimed) Usbfs.reconnectKernelDriver(fd, ui.id)
             runCatching { c.close() }
             AudioEngine.log("usb dac: closed")
         }
@@ -682,6 +688,26 @@ object UsbDac {
         info = null
         rates = emptyList()
         updateActive(false)
+    }
+
+
+    /** Marks every subsequent close in this process as an exit eject. Call this before
+     * PlayerController.release(), because release may close the DAC asynchronously. */
+    fun prepareForProcessExit() {
+        processExitEject = true
+        session++
+        main.removeCallbacks(stabilizerIdle)
+        AudioEngine.log("usb dac: process-exit eject armed")
+    }
+
+    /** Stops helper audio, drains/stops USB transfer, releases all claimed interfaces,
+     * closes UsbDeviceConnection, and deliberately does not request Android kernel
+     * USB-audio reattachment before the process exits. */
+    fun forceEjectForProcessExit() {
+        prepareForProcessExit()
+        UsbStabilizer.stopAndAwait()
+        close(reattach = false)
+        AudioEngine.log("usb dac: logical eject completed for process exit")
     }
 
     // ---------------- 音声データの受け渡し ----------------

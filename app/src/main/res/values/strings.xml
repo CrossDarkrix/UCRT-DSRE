@@ -471,7 +471,7 @@
     <string name="release_usb_dac_desc">"Pauses playback and gives the USB DAC back to Android, so other apps can play through it (UCRT takes it again when you start playback)"</string>
     <string name="usb_dac_released">"Gave the USB DAC back to Android"</string>
     <string name="quit_app">"Quit"</string>
-    <string name="quit_app_desc">"Stops playback, gives the USB DAC back to Android and fully closes the app"</string>
+    <string name="quit_app_desc">"Stops playback and DAC keep-alive, logically ejects the USB connection, then fully closes the app"</string>
     <string name="most_played">"Most played"</string>
     <string name="moves_tabs_to_left_side">"Moves the tabs to the left side and, on wide screens, keeps the player open next to the library. Auto turns it on for tablets and other large screens."</string>
     <string name="mp3_bitrate">"MP3 bitrate"</string>

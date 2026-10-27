@@ -467,7 +467,7 @@
     <string name="release_usb_dac_desc">"再生を一時停止して、USB DACをAndroidに返します。ほかのアプリの音もUSB DACから出るようになります（UCRTで再生を始めると、またUCRTが使います）"</string>
     <string name="usb_dac_released">"USB DACをAndroidに返しました"</string>
     <string name="quit_app">"終了"</string>
-    <string name="quit_app_desc">"再生を止め、USB DACをAndroidに返して、アプリを完全に終了します"</string>
+    <string name="quit_app_desc">"再生とDAC維持を停止し、USB接続を論理的に取り出してから、アプリを完全に終了します"</string>
     <string name="most_played">"よく聴く曲"</string>
     <string name="moves_tabs_to_left_side">"タブを画面の左側に並べ、広い画面では再生画面をライブラリの右に表示したままにします。「自動」では、タブレットなど画面の大きい端末で有効になります。"</string>
     <string name="mp3_bitrate">"MP3ビットレート"</string>
