@@ -1,0 +1,19 @@
+FFmpeg 9.0.2 notice
+
+This software uses libraries from the FFmpeg project under the GNU Lesser General Public License version 2.1 or later.
+
+Bundled shared libraries:
+- libavutil.so
+- libswresample.so
+- libswscale.so
+- libavcodec.so
+- libavformat.so
+
+The bundled configuration does not enable --enable-gpl, --enable-version3, or --enable-nonfree.
+
+Official project: https://ffmpeg.org/
+Corresponding upstream source release: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+License and compliance information: https://ffmpeg.org/legal.html
+
+The full GNU LGPL v2.1 text is included separately as LGPL-2.1.txt.
+Exact ABI configuration records and binary hashes are retained in the project under third_party/ffmpeg/build-info and third_party/ffmpeg/build-manifest.json. A summary is included in FFmpeg-BUILD-INFO.txt.

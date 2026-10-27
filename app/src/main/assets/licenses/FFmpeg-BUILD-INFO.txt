@@ -1,0 +1,48 @@
+FFmpeg / LAME build and relinking information
+
+Versions
+- FFmpeg: 9.0.2
+- LAME: 3.100
+- Android minimum API: 23
+- ABIs: arm64-v8a, armeabi-v7a
+
+License profile
+- LGPL-oriented build
+- --enable-gpl is not enabled
+- --enable-version3 is not enabled
+- --enable-nonfree is not enabled
+- FFmpeg is shipped as ABI-specific shared libraries
+- LAME is built as libmp3lame.a and statically linked into shared libavcodec.so
+
+Bundled FFmpeg shared libraries
+- libavutil.so
+- libswresample.so
+- libswscale.so
+- libavcodec.so
+- libavformat.so
+
+Enabled DSRE output encoders
+- ALAC
+- FLAC
+- AAC
+- libmp3lame
+- PCM
+
+Corresponding sources
+- FFmpeg 9.0.2: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+- LAME 3.100: https://sourceforge.net/projects/lame/files/lame/3.100/
+- zlib: https://www.zlib.net/
+
+Reproduction and audit records in the source project
+- tools/ffmpeg/build.sh
+- third_party/ffmpeg/build-manifest.json
+- third_party/ffmpeg/build-info/arm64-v8a/ffmpeg-config.h
+- third_party/ffmpeg/build-info/arm64-v8a/ffmpeg-config-components.h
+- third_party/ffmpeg/build-info/arm64-v8a/ffmpeg-config.mak
+- third_party/ffmpeg/build-info/armeabi-v7a/ffmpeg-config.h
+- third_party/ffmpeg/build-info/armeabi-v7a/ffmpeg-config-components.h
+- third_party/ffmpeg/build-info/armeabi-v7a/ffmpeg-config.mak
+- third_party/ffmpeg/NOTICE.md
+- third_party/ffmpeg/INTEGRATION.md
+
+The exact configure command, toolchain paths, component flags, and binary hashes for each ABI are preserved in those records. The release source package must retain the matching source archives/build script and any changes made to those sources so recipients can reproduce or relink the LGPL components.

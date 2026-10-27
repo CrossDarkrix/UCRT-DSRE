@@ -1015,4 +1015,12 @@
     <string name="dsre_ready">変換できます。「変換を開始」を選び、出力ファイルを指定してください。</string>
     <string name="app_icon">アプリアイコン</string>
     <string name="app_icon_description">ランチャーに表示するアイコンを選択します。ホーム画面への反映には少し時間がかかる場合があります。</string>
+    <string name="ffmpeg_license_note">このアプリはFFmpegプロジェクトのライブラリをLGPL v2.1以降の条件で使用しています。同梱ビルドではGPLおよびnonfreeオプションを有効にしていません。共有ライブラリはlibavutil、libswresample、libswscale、libavcodec、libavformatです。</string>
+    <string name="lame_license_note">MP3エンコードにLAME 3.100をLGPLの条件で使用し、共有ライブラリlibavcodec.soへ静的リンクしています。対応ソースと再リンク・ビルド情報はソースリンクと同梱ビルド情報から確認できます。</string>
+    <string name="zlib_license_note">同梱FFmpegビルドでzlibをzlib Licenseの条件で使用しています。</string>
+    <string name="ffmpeg_build_information">FFmpeg / LAME ビルド情報</string>
+    <string name="build_and_relinking_information">ビルド・再リンク情報</string>
+    <string name="ffmpeg_build_information_note">このアプリで使用するライセンス構成、有効ライブラリ、ABI、ビルド設定記録、ハッシュ、ソース入手先、LAME静的リンク構成を表示します。</string>
+    <string name="third_party_notices">第三者ソフトウェア通知</string>
+    <string name="third_party_notices_note">同梱または参照している第三者ソフトウェアとデータの帰属・用途を表示します。</string>
 </resources>

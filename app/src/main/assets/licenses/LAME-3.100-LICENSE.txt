@@ -1,0 +1,15 @@
+LAME 3.100 notice
+
+LAME is used for MP3 encoding under the GNU Lesser General Public License.
+In this application build, libmp3lame.a is statically linked into the shared FFmpeg library libavcodec.so.
+
+Official project: https://lame.sourceforge.io/
+Corresponding upstream source release: https://sourceforge.net/projects/lame/files/lame/3.100/
+
+From the LAME 3.100 LICENSE:
+
+Can I use LAME in my commercial program?
+
+Yes, you can, under the restrictions of the LGPL (see COPYING in the LAME source distribution). The LAME project asks applications to fully acknowledge use of LAME and provide a link to the project website. Modifications to LAME must be released under the LGPL.
+
+The full GNU LGPL v2.1 text is included separately as LGPL-2.1.txt. Build and relinking details are included in FFmpeg-BUILD-INFO.txt and retained in the project build records.

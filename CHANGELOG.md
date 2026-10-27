@@ -1,3 +1,10 @@
+## FFmpeg / LAME / zlib license integration
+
+- Added FFmpeg 9.0.2, LAME 3.100, and zlib entries to About / License information.
+- Added FFmpeg LGPL attribution, LAME static-link disclosure, source links, build/relinking details, and third-party notices.
+- Added bundled notice and license assets for offline viewing.
+- Updated THIRD_PARTY_NOTICES.md with the native audio toolchain.
+
 ## Appearance Preset Transfer
 
 - Added Storage Access Framework export and import to the Appearance settings page.

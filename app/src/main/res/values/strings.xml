@@ -1019,4 +1019,12 @@
     <string name="dsre_ready">Ready to convert. Choose Start conversion and select the output file.</string>
     <string name="app_icon">App icon</string>
     <string name="app_icon_description">Choose a launcher icon. The home screen may take a moment to refresh.</string>
+    <string name="ffmpeg_license_note">This software uses libraries from the FFmpeg project under the LGPL v2.1 or later. The bundled build does not enable GPL or nonfree options. Shared libraries: libavutil, libswresample, libswscale, libavcodec, and libavformat.</string>
+    <string name="lame_license_note">LAME 3.100 is used for MP3 encoding under the LGPL and is statically linked into the shared libavcodec.so. Corresponding source and relinking/build information are provided through the source link and bundled build information.</string>
+    <string name="zlib_license_note">zlib is used by the bundled FFmpeg build under the zlib License.</string>
+    <string name="ffmpeg_build_information">FFmpeg / LAME build information</string>
+    <string name="build_and_relinking_information">Build and relinking information</string>
+    <string name="ffmpeg_build_information_note">Shows the license profile, enabled libraries, ABIs, build configuration records, hashes, source locations, and static LAME linkage used by this application.</string>
+    <string name="third_party_notices">Third-party notices</string>
+    <string name="third_party_notices_note">Attributions and usage notes for bundled and referenced third-party software and data.</string>
 </resources>
