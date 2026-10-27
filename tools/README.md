@@ -43,7 +43,7 @@ chmod +x move_ninja_cmake && ./move_ninja_cmake```
 
 ## 次に NDKを次のように指定しておく
 
-```
+```bash
 export ANDROID_NDK_ROOT="$HOME/android-ndk"
 export ANDROID_NDK_TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-aarch64"
 ```
