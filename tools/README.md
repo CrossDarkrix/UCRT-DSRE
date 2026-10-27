@@ -37,7 +37,8 @@ ln -s "$TERMUX_NINJA" "$SDK_CMAKE/ninja"
 chmod 755 "$SDK_CMAKE/cmake" "$SDK_CMAKE/ninja
 ```
 
-例: ```bash
+例: 
+```bash
 chmod +x move_ninja_cmake && ./move_ninja_cmake
 ```
 
