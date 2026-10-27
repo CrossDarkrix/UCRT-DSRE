@@ -22,6 +22,10 @@ class DsreFileConverter(private val context: Context) {
     @Volatile private var cancelled = false
     fun cancel() { cancelled = true; runCatching { DsreNativeEncoder.cancel() } }
 
+    /** Releases converter-owned state after one track. Native/media resources are closed
+     * by convert()/decode() finally blocks; this method severs the remaining lifecycle state. */
+    fun release() { cancelled = false }
+
     fun convert(input: Uri, output: Uri, parameters: DsreParameters, outputFormat: String, onProgress: (Progress) -> Unit): Result {
         cancelled = false
         val temp = File.createTempFile("dsre_", ".wav", context.cacheDir)
@@ -77,6 +81,8 @@ class DsreFileConverter(private val context: Context) {
     private fun decode(input: Uri, p: DsreParameters, writer: WavWriter, onProgress: (Progress) -> Unit): Long {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
+        var resampler: RationalResampler? = null
+        var dsp: DsreDspEngine? = null
         try {
             context.contentResolver.openAssetFileDescriptor(input, "r")?.use { afd ->
                 extractor.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
@@ -103,8 +109,8 @@ class DsreFileConverter(private val context: Context) {
             var sourceRate = sourceFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var sourceChannels = sourceFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
-            var resampler: RationalResampler? = if (sourceRate != p.targetSampleRate) RationalResampler(sourceRate, p.targetSampleRate, 2, null, 32) else null
-            var dsp: DsreDspEngine? = DsreDspEngine(p.targetSampleRate, 2, p)
+            resampler = if (sourceRate != p.targetSampleRate) RationalResampler(sourceRate, p.targetSampleRate, 2, null, 32) else null
+            dsp = DsreDspEngine(p.targetSampleRate, 2, p)
             var outFrames = 0L
             var lastPts = 0L
             val timeoutUs = 10_000L
@@ -132,6 +138,9 @@ class DsreFileConverter(private val context: Context) {
                         sourceRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         sourceChannels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         pcmEncoding = if (outFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) outFormat.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT
+                        runCatching { dsp?.reset() }
+                        dsp = null
+                        resampler = null
                         resampler = if (sourceRate != p.targetSampleRate) RationalResampler(sourceRate, p.targetSampleRate, 2, null, 32) else null
                         dsp = DsreDspEngine(p.targetSampleRate, 2, p)
                     }
@@ -172,8 +181,13 @@ class DsreFileConverter(private val context: Context) {
             }
             return outFrames
         } finally {
+            // Drop all per-track DSP/PCM ownership before the next batch item starts.
+            runCatching { dsp?.reset() }
+            dsp = null
+            resampler = null
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
+            codec = null
             extractor.release()
         }
     }

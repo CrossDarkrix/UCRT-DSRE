@@ -22,11 +22,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 
 data class DsreServiceJob(val uri: String, val name: String)
 data class DsreServiceRequest(
@@ -110,27 +112,35 @@ class DsreConversionService : Service() {
     }
 
     private suspend fun runBatch(request: DsreServiceRequest) {
-        val localConverter = DsreFileConverter(applicationContext)
-        converter = localConverter
         val tree = Uri.parse(request.outputTree)
         try {
             request.jobs.forEachIndexed { index, job ->
                 if (DsreConversionCoordinator.cancelRequested.get()) throw CancellationException("Cancelled")
                 updateJob(index, "PROCESSING", 0f, "Preparing", null)
-                val result = runCatching {
-                    withContext(Dispatchers.IO) {
-                        val directory = DocumentFile.fromTreeUri(applicationContext, tree)
-                            ?: throw IOException("Unable to open output folder")
-                        if (!directory.canWrite()) throw IOException("Output folder is not writable")
-                        val output = createUniqueOutput(directory, job.name, request.format)
-                        localConverter.convert(Uri.parse(job.uri), output.uri, request.parameters, request.format) { progress ->
-                            updateJob(index, "PROCESSING", progress.fraction, progress.stage, null)
-                            updateNotification(
-                                "${index + 1}/${request.jobs.size} ${job.name}",
-                                (progress.fraction * 100).toInt(), 100, false,
-                            )
+                var trackConverter: DsreFileConverter? = DsreFileConverter(applicationContext)
+                converter = trackConverter
+                val result = try {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            val directory = DocumentFile.fromTreeUri(applicationContext, tree)
+                                ?: throw IOException("Unable to open output folder")
+                            if (!directory.canWrite()) throw IOException("Output folder is not writable")
+                            val output = createUniqueOutput(directory, job.name, request.format)
+                            val activeConverter = trackConverter
+                                ?: throw IOException("Track converter was released unexpectedly")
+                            activeConverter.convert(Uri.parse(job.uri), output.uri, request.parameters, request.format) { progress ->
+                                updateJob(index, "PROCESSING", progress.fraction, progress.stage, null)
+                                updateNotification(
+                                    "${index + 1}/${request.jobs.size} ${job.name}",
+                                    (progress.fraction * 100).toInt(), 100, false,
+                                )
+                            }
                         }
                     }
+                } finally {
+                    trackConverter?.release()
+                    trackConverter = null
+                    converter = null
                 }
                 result.fold(
                     onSuccess = { updateJob(index, "COMPLETED", 1f, "Completed", null) },
@@ -142,6 +152,18 @@ class DsreConversionService : Service() {
                         if (cancelled) throw CancellationException("Cancelled")
                     },
                 )
+
+                // Let ART and other coroutines run after all strong references for this track
+                // have been cleared. Every fourth completed item also requests a full GC.
+                if (index + 1 < request.jobs.size) {
+                    yield()
+                    if ((index + 1) % 4 == 0) {
+                        Runtime.getRuntime().gc()
+                        delay(150L)
+                    } else {
+                        delay(50L)
+                    }
+                }
             }
             stopCompleted("DSRE conversion completed")
         } catch (_: CancellationException) {
