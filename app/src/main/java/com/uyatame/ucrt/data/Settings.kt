@@ -392,6 +392,23 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[key] = value }
     }
 
+    /** 外観プリセットをテーマ色を含めて1回のDataStore transactionで復元する。 */
+    suspend fun setAppearanceBundle(
+        themeMode: Int,
+        dynamicColor: Boolean,
+        themeColor: Int,
+        textColor: Int,
+        appearanceConfig: String,
+    ) {
+        context.dataStore.edit {
+            it[Keys.themeMode] = themeMode.coerceIn(0, 2)
+            it[Keys.dynamicColor] = dynamicColor
+            it[Keys.themeColor] = themeColor
+            it[Keys.textColor] = textColor
+            it[Keys.appearanceConfig] = appearanceConfig
+        }
+    }
+
     /** 出力先をまとめて切り替える(途中の状態で出力が作り直されないよう、1 回で書き込む) */
     suspend fun setOutput(usbDirect: Boolean, device: String?) {
         context.dataStore.edit {

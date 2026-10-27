@@ -18,8 +18,10 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -59,17 +61,32 @@ object DsreConversionCoordinator {
             jobs = request.jobs.map { DsreServiceJobState(it.uri, it.name) },
             message = "Batch conversion started",
         )
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, DsreConversionService::class.java).setAction(DsreConversionService.ACTION_START),
-        )
-        return true
+        return runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, DsreConversionService::class.java).setAction(DsreConversionService.ACTION_START),
+            )
+            true
+        }.getOrElse { error ->
+            pendingRequest = null
+            cancelRequested.set(false)
+            stateMutable.value = DsreServiceState(
+                running = false,
+                jobs = request.jobs.map { DsreServiceJobState(it.uri, it.name, state = "FAILED", stage = "Failed", error = error.message) },
+                message = "Unable to start DSRE conversion: ${error.message ?: error.javaClass.simpleName}",
+            )
+            false
+        }
     }
 
     fun cancel(context: Context) {
         cancelRequested.set(true)
-        DsreFileConverter(context.applicationContext).cancel()
-        context.startService(Intent(context, DsreConversionService::class.java).setAction(DsreConversionService.ACTION_CANCEL))
+        runCatching {
+            DsreFileConverter(context.applicationContext).also { temporary ->
+                try { temporary.cancel() } finally { temporary.release() }
+            }
+        }
+        runCatching { context.startService(Intent(context, DsreConversionService::class.java).setAction(DsreConversionService.ACTION_CANCEL)) }
     }
 
     internal fun update(transform: (DsreServiceState) -> DsreServiceState) {
@@ -78,8 +95,14 @@ object DsreConversionCoordinator {
 }
 
 class DsreConversionService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val exceptionHandler = CoroutineExceptionHandler { _, error ->
+        safeStopCompleted("DSRE conversion failed: ${error.message ?: error.javaClass.simpleName}")
+        DsreConversionCoordinator.pendingRequest = null
+        batchJob = null
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private var converter: DsreFileConverter? = null
+    private var batchJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -91,13 +114,30 @@ class DsreConversionService : Service() {
             ACTION_CANCEL -> {
                 DsreConversionCoordinator.cancelRequested.set(true)
                 converter?.cancel()
-                updateNotification("Cancelling DSRE conversion", 0, 0, true)
+                safeUpdateNotification("Cancelling DSRE conversion", 0, 0, true)
             }
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, notification("Preparing DSRE conversion", 0, 0, false))
-                val request = DsreConversionCoordinator.pendingRequest
-                if (request == null) stopCompleted("No pending conversion request")
-                else scope.launch { runBatch(request) }
+                val foregroundStarted = runCatching {
+                    startForeground(NOTIFICATION_ID, notification("Preparing DSRE conversion", 0, 0, false))
+                }.fold(
+                    onSuccess = { true },
+                    onFailure = {
+                        DsreConversionCoordinator.pendingRequest = null
+                        safeStopCompleted("Unable to start DSRE conversion: ${it.message ?: it.javaClass.simpleName}")
+                        false
+                    },
+                )
+                if (foregroundStarted) {
+                    val request = DsreConversionCoordinator.pendingRequest
+                    when {
+                        request == null -> safeStopCompleted("No pending conversion request")
+                        batchJob?.isActive == true -> Unit
+                        else -> batchJob = scope.launch {
+                            try { runBatch(request) }
+                            finally { batchJob = null }
+                        }
+                    }
+                }
             }
         }
         return START_NOT_STICKY
@@ -106,7 +146,8 @@ class DsreConversionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        converter?.cancel()
+        runCatching { converter?.cancel() }
+        batchJob?.cancel()
         scope.cancel()
         super.onDestroy()
     }
@@ -117,31 +158,29 @@ class DsreConversionService : Service() {
             request.jobs.forEachIndexed { index, job ->
                 if (DsreConversionCoordinator.cancelRequested.get()) throw CancellationException("Cancelled")
                 updateJob(index, "PROCESSING", 0f, "Preparing", null)
-                var trackConverter: DsreFileConverter? = DsreFileConverter(applicationContext)
-                converter = trackConverter
-                val result = try {
-                    runCatching {
-                        withContext(Dispatchers.IO) {
-                            val directory = DocumentFile.fromTreeUri(applicationContext, tree)
-                                ?: throw IOException("Unable to open output folder")
-                            if (!directory.canWrite()) throw IOException("Output folder is not writable")
-                            val output = createUniqueOutput(directory, job.name, request.format)
-                            val activeConverter = trackConverter
-                                ?: throw IOException("Track converter was released unexpectedly")
-                            activeConverter.convert(Uri.parse(job.uri), output.uri, request.parameters, request.format) { progress ->
-                                updateJob(index, "PROCESSING", progress.fraction, progress.stage, null)
-                                updateNotification(
-                                    "${index + 1}/${request.jobs.size} ${job.name}",
-                                    (progress.fraction * 100).toInt(), 100, false,
-                                )
-                            }
+                var trackConverter: DsreFileConverter? = null
+                var output: DocumentFile? = null
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val directory = DocumentFile.fromTreeUri(applicationContext, tree)
+                            ?: throw IOException("Unable to open output folder")
+                        if (!directory.canWrite()) throw IOException("Output folder is not writable")
+                        output = createUniqueOutput(directory, job.name, request.format)
+                        trackConverter = DsreFileConverter(applicationContext).also { converter = it }
+                        trackConverter!!.convert(Uri.parse(job.uri), output!!.uri, request.parameters, request.format) { progress ->
+                            updateJob(index, "PROCESSING", progress.fraction, progress.stage, null)
+                            safeUpdateNotification(
+                                "${index + 1}/${request.jobs.size} ${job.name}",
+                                (progress.fraction * 100).toInt(), 100, false,
+                            )
                         }
                     }
-                } finally {
-                    trackConverter?.release()
-                    trackConverter = null
-                    converter = null
                 }
+                runCatching { trackConverter?.cancel() }
+                runCatching { trackConverter?.release() }
+                trackConverter = null
+                converter = null
+                if (result.isFailure) runCatching { output?.delete() }
                 result.fold(
                     onSuccess = { updateJob(index, "COMPLETED", 1f, "Completed", null) },
                     onFailure = { error ->
@@ -162,11 +201,11 @@ class DsreConversionService : Service() {
                     delay(if ((index + 1) % 4 == 0) 350L else 200L)
                 }
             }
-            stopCompleted("DSRE conversion completed")
+            safeStopCompleted("DSRE conversion completed")
         } catch (_: CancellationException) {
-            stopCompleted("DSRE conversion cancelled")
+            safeStopCompleted("DSRE conversion cancelled")
         } catch (error: Throwable) {
-            stopCompleted("DSRE conversion failed: ${error.message ?: error.javaClass.simpleName}")
+            safeStopCompleted("DSRE conversion failed: ${error.message ?: error.javaClass.simpleName}")
         } finally {
             converter = null
             DsreConversionCoordinator.pendingRequest = null
@@ -199,6 +238,18 @@ class DsreConversionService : Service() {
         val existing = directory.listFiles().mapNotNull { it.name?.lowercase(Locale.ROOT) }.toHashSet()
         while (candidate.lowercase(Locale.ROOT) in existing) candidate = "$stem-DSRE-$suffix.${extension}".also { suffix++ }
         return directory.createFile(mime, candidate) ?: throw IOException("Unable to create output: $candidate")
+    }
+
+    private fun safeUpdateNotification(text: String, progress: Int, max: Int, completed: Boolean) {
+        runCatching { updateNotification(text, progress, max, completed) }
+    }
+
+    private fun safeStopCompleted(message: String) {
+        runCatching { stopCompleted(message) }.onFailure {
+            DsreConversionCoordinator.update { current -> current.copy(running = false, currentIndex = -1, message = message) }
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            runCatching { stopSelf() }
+        }
     }
 
     private fun createChannel() {

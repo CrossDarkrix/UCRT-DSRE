@@ -1,3 +1,18 @@
+## Appearance Preset Transfer
+
+- Added Storage Access Framework export and import to the Appearance settings page.
+- Export includes theme mode, dynamic color, theme color, text color, and the complete normalized appearance configuration.
+- Added schema/version validation and atomic DataStore restoration.
+- Failed imports leave current appearance settings unchanged.
+
+## DSRE Batch Recovery and Preset Transfer
+
+- Added foreground-service startup rollback and duplicate batch-start protection.
+- Isolated per-track converter creation, cancellation, release, notification updates, and incomplete output cleanup.
+- Added final coroutine exception recovery so repeated failures return the coordinator to an idle state.
+- Added versioned JSON export and import for saved DSRE presets using Android document pickers.
+- Added schema, value, sample-rate, output-format, and preset-name validation with add/update/invalid result counts.
+
 ## Phase 5B Real Component Migration
 
 - Replaced the color-scheme-only Phase 5B approach with explicit UCRT Glass containers.

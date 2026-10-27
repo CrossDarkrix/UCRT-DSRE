@@ -667,6 +667,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repo.set(key, v) }
     }
 
+    fun setAppearanceBundle(
+        themeMode: Int,
+        dynamicColor: Boolean,
+        themeColor: Int,
+        textColor: Int,
+        appearanceConfig: String,
+    ) {
+        viewModelScope.launch {
+            repo.setAppearanceBundle(themeMode, dynamicColor, themeColor, textColor, appearanceConfig)
+        }
+    }
+
     // ---- 新しい版の確認 ----
 
     /** 知らせる新しい版(ダイアログを出す)。null なら出さない */

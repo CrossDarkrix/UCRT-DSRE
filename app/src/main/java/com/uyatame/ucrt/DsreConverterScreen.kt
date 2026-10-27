@@ -32,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
@@ -120,6 +121,48 @@ private fun presetValues(p:DsrePreset)=when(p){
                 val found=withContext(Dispatchers.IO){ collectAudioDocuments(DocumentFile.fromTreeUri(app,uri)) }
                 addInputs(found.map { it.uri to (it.name?:"audio") })
                 if(found.isEmpty())batchError=tr("音声ファイルが見つかりませんでした","No supported audio files were found")
+            }
+        }
+    }
+
+    val exportPresets=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")){uri->
+        if(uri!=null){
+            runCatching {
+                val payload=encodePresetExport(userPresets)
+                app.contentResolver.openOutputStream(uri,"wt")?.use{it.write(payload.toByteArray(StandardCharsets.UTF_8))}
+                    ?: throw IOException("Unable to open export destination")
+            }.onSuccess {
+                batchMessage=tr("プリセットをエクスポートしました","Presets exported")
+                batchError=null
+            }.onFailure {
+                batchError=tr("プリセットのエクスポートに失敗しました","Preset export failed")+": "+(it.message?:it.javaClass.simpleName)
+            }
+        }
+    }
+    val importPresets=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
+        if(uri!=null){
+            runCatching {
+                val raw=app.contentResolver.openInputStream(uri)?.bufferedReader(StandardCharsets.UTF_8)?.use{it.readText()}
+                    ?: throw IOException("Unable to open preset file")
+                val imported=decodePresetExport(raw)
+                val existing=userPresets.associateBy{it.name.lowercase(Locale.ROOT)}.toMutableMap()
+                var added=0;var updated=0
+                imported.presets.forEach{item->
+                    val key=item.name.lowercase(Locale.ROOT)
+                    if(existing.containsKey(key))updated++ else added++
+                    existing[key]=item
+                }
+                userPresets=existing.values.sortedBy{it.name.lowercase(Locale.getDefault())}
+                prefs.edit().putString("user_presets",encodeUserPresets(userPresets)).apply()
+                Triple(added,updated,imported.invalid)
+            }.onSuccess {result->
+                batchMessage=tr(
+                    "プリセットを読み込みました（追加 ${result.first}、更新 ${result.second}、無効 ${result.third}）",
+                    "Presets imported (added ${result.first}, updated ${result.second}, invalid ${result.third})"
+                )
+                batchError=null
+            }.onFailure {
+                batchError=tr("プリセットの読み込みに失敗しました","Preset import failed")+": "+(it.message?:it.javaClass.simpleName)
             }
         }
     }
@@ -244,6 +287,10 @@ private fun presetValues(p:DsrePreset)=when(p){
                 OutlinedButton({presetNameInput=selectedUserPreset;showSavePresetDialog=true},modifier=Modifier.weight(1f)){Text(tr("現在値を保存","Save current"))}
                 OutlinedButton({deleteUserPreset()},enabled=selectedUserPreset.isNotBlank(),modifier=Modifier.weight(1f)){Text(tr("保存プリセット削除","Delete saved"))}
             }
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                OutlinedButton({exportPresets.launch("UCRT-DSRE-Presets.json")},enabled=userPresets.isNotEmpty(),modifier=Modifier.weight(1f)){Text(tr("エクスポート","Export"))}
+                OutlinedButton({importPresets.launch(arrayOf("application/json","text/json","text/plain"))},modifier=Modifier.weight(1f)){Text(tr("インポート","Import"))}
+            }
             ChoiceField(S(R.string.dsre_preset),DsrePreset.valueOf(preset),DsrePreset.entries.toList(),{S(it.titleRes)}){usePreset(it)}
             NormalizedSlider(S(R.string.dsre_harmonic),harmonic){harmonic=it;custom();vm.set(Keys.dsreHarmonic,it)}
             NormalizedSlider(S(R.string.dsre_strength),strength){strength=it;custom();vm.set(Keys.dsreStrength,it)}
@@ -269,6 +316,39 @@ private fun loadUserPresets(raw: String): List<DsreUserPreset> = runCatching {
     val a=JSONArray(raw);List(a.length()){i->val o=a.getJSONObject(i);DsreUserPreset(o.getString("name"),o.getDouble("harmonic").toFloat(),o.getDouble("strength").toFloat(),o.getInt("rate"),o.getDouble("width").toFloat(),o.getDouble("dynamic").toFloat(),o.getDouble("context").toFloat(),o.optString("format","FLAC"))}
 }.getOrElse { emptyList() }
 private fun encodeUserPresets(items:List<DsreUserPreset>):String{val a=JSONArray();items.forEach{p->a.put(JSONObject().put("name",p.name).put("harmonic",p.harmonic.toDouble()).put("strength",p.strength.toDouble()).put("rate",p.rate).put("width",p.width.toDouble()).put("dynamic",p.dynamic.toDouble()).put("context",p.context.toDouble()).put("format",p.format))};return a.toString()}
+private data class PresetImportResult(val presets:List<DsreUserPreset>,val invalid:Int)
+private fun encodePresetExport(items:List<DsreUserPreset>):String=JSONObject()
+    .put("schema","ucrt-dsre-presets")
+    .put("version",1)
+    .put("exportedBy","UCRT")
+    .put("presets",JSONArray(encodeUserPresets(items)))
+    .toString(2)
+private fun decodePresetExport(raw:String):PresetImportResult{
+    val root=JSONObject(raw)
+    require(root.optString("schema")=="ucrt-dsre-presets"){ "Unsupported preset schema" }
+    require(root.optInt("version",-1)==1){ "Unsupported preset version" }
+    val array=root.optJSONArray("presets")?:throw IllegalArgumentException("Missing presets array")
+    val valid=ArrayList<DsreUserPreset>();var invalid=0
+    val rates=setOf(44100,48000,88200,96000,176400,192000)
+    val formats=DsreOutputFormat.entries.map{it.name}.toSet()
+    for(i in 0 until array.length()){
+        val item=runCatching{
+            val o=array.getJSONObject(i)
+            val name=o.getString("name").trim().also{require(it.isNotBlank()&&it.length<=80)}
+            val harmonic=o.getDouble("harmonic").also{require(it.isFinite())}.toFloat().coerceIn(0f,1f)
+            val strength=o.getDouble("strength").also{require(it.isFinite())}.toFloat().coerceIn(0f,1f)
+            val rate=o.getInt("rate").also{require(it in rates)}
+            val width=o.getDouble("width").also{require(it.isFinite())}.toFloat().coerceIn(0f,1f)
+            val dynamic=o.getDouble("dynamic").also{require(it.isFinite())}.toFloat().coerceIn(0f,2f)
+            val context=o.getDouble("context").also{require(it.isFinite())}.toFloat().coerceIn(0f,1f)
+            val format=o.optString("format","FLAC").uppercase(Locale.ROOT).also{require(it in formats)}
+            DsreUserPreset(name,harmonic,strength,rate,width,dynamic,context,format)
+        }.getOrNull()
+        if(item==null)invalid++ else valid.add(item)
+    }
+    require(valid.isNotEmpty()){ "No valid presets found" }
+    return PresetImportResult(valid,invalid)
+}
 private val supportedAudioExtensions=setOf("wav","flac","m4a","mp4","mp3","aac","aif","aiff","wv","ape","ogg","opus")
 private fun collectAudioDocuments(root:DocumentFile?):List<DocumentFile>{
     if(root==null||!root.exists())return emptyList()
