@@ -819,18 +819,20 @@ class AudioOutput(
         if (samples <= 0) return
         // Preserve source PCM. USB visualization is published only when this block is
         // expected to reach the DAC playhead, rather than when it enters the ring buffer.
-        val spectrumSource = src.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        val spectrumSource = if (SpectrumTap.isConsumerActive()) src.duplicate().order(ByteOrder.LITTLE_ENDIAN) else null
         framesWritten += frames
+        fun publishSpectrum() {
+            val source = spectrumSource ?: return
+            val queuedSourceFrames = (framesWritten - headFrames()).coerceAtLeast(0L)
+            val delayNanos = queuedSourceFrames * 1_000_000_000L / sampleRate.coerceAtLeast(1)
+            SpectrumTap.submitPcm(source, srcEnc, frames, channels, sampleRate, delayNanos)
+        }
         val d = dac
         if (d != null) {
             writeUsb(d, src, srcEnc, frames, stop)
-            val queuedSourceFrames = (framesWritten - headFrames()).coerceAtLeast(0L)
-            val delayNanos = queuedSourceFrames * 1_000_000_000L / sampleRate.coerceAtLeast(1)
-            SpectrumTap.submitPcm(spectrumSource, srcEnc, frames, channels, sampleRate, delayNanos)
+            publishSpectrum()
             return
         }
-        // Android AudioTrack keeps its existing behavior; the reported lead concerned USB DAC direct output.
-        SpectrumTap.submitPcm(spectrumSource, srcEnc, frames, channels, sampleRate)
         val t = track ?: return
         // 通常の出力: float に変換し、イコライザーと音量を通す
         if (fbuf.size < samples) fbuf = FloatArray(samples)
@@ -860,6 +862,7 @@ class AudioOutput(
             if (mixBuf.size < frames * 2) mixBuf = FloatArray(frames * 2)
             downmix(fbuf, frames, channels, mixBuf)
             writeTrack(mixBuf, frames * 2, stop)
+            publishSpectrum()
             checkUnderrun(t)
             return
         }
@@ -867,6 +870,7 @@ class AudioOutput(
         if (p != null) {
             // DAR: 流れ作業でアップサンプリング(出力への書き込みは流れ作業の出力のスレッド)
             p.submit(fbuf, frames, 1f, stop)
+            publishSpectrum()
             return
         }
         val u = up
@@ -878,6 +882,7 @@ class AudioOutput(
         } else {
             writeTrack(fbuf, samples, stop)
         }
+        publishSpectrum()
         checkUnderrun(t)
     }
 

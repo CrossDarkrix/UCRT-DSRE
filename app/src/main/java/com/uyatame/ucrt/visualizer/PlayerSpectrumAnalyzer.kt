@@ -1,29 +1,19 @@
 package com.uyatame.ucrt.visualizer
 
-import android.content.Context
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -31,8 +21,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.uyatame.ucrt.player.SpectrumTap
 import kotlinx.coroutines.delay
 import kotlin.math.PI
@@ -49,49 +41,6 @@ private enum class SpectrumStyle(val key: String, val label: String) {
     MIRROR("mirror", "Mirror"),
     LINE("line", "Line"),
     CIRCLE("circle", "Circle"),
-}
-
-private enum class SpectrumDisplayMode(val key: String, val label: String) {
-    NORMAL("normal", "NORMAL"),
-    VOCAL("vocal", "VOCAL"),
-}
-
-private val vocalWeightPoints = arrayOf(
-    30f to 0.25f,
-    80f to 0.40f,
-    150f to 0.65f,
-    300f to 1.05f,
-    500f to 1.20f,
-    1_000f to 1.40f,
-    2_000f to 1.55f,
-    3_500f to 1.35f,
-    6_000f to 1.05f,
-    10_000f to 0.80f,
-    16_000f to 0.55f,
-    20_000f to 0.40f,
-)
-
-private fun vocalDisplayWeight(frequencyHz: Float): Float {
-    val frequency = frequencyHz.coerceIn(vocalWeightPoints.first().first, vocalWeightPoints.last().first)
-    for (index in 0 until vocalWeightPoints.lastIndex) {
-        val left = vocalWeightPoints[index]
-        val right = vocalWeightPoints[index + 1]
-        if (frequency <= right.first) {
-            val position = ((ln(frequency) - ln(left.first)) / (ln(right.first) - ln(left.first))).coerceIn(0f, 1f)
-            return left.second + (right.second - left.second) * position
-        }
-    }
-    return vocalWeightPoints.last().second
-}
-
-private fun applyDisplayMode(source: FloatArray, mode: SpectrumDisplayMode): FloatArray {
-    if (mode == SpectrumDisplayMode.NORMAL || source.isEmpty()) return source.copyOf()
-    val minimumHz = 30.0
-    val maximumHz = 20_000.0
-    return FloatArray(source.size) { index ->
-        val center = minimumHz * Math.pow(maximumHz / minimumHz, (index + 0.5) / source.size)
-        (source[index] * vocalDisplayWeight(center.toFloat())).coerceIn(0f, 1f)
-    }
 }
 
 private fun smoothBands(source: FloatArray): FloatArray {
@@ -183,29 +132,42 @@ fun PlayerSpectrumAnalyzer(
     compact: Boolean,
     refreshMs: Int,
     colorArgb: Int,
+    styleKey: String,
+    syncOffsetMs: Int,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("player_visualizer", Context.MODE_PRIVATE) }
-    var style by remember {
-        mutableStateOf(SpectrumStyle.entries.firstOrNull { it.key == prefs.getString("style", "bars") } ?: SpectrumStyle.BARS)
+    val style = remember(styleKey) {
+        SpectrumStyle.entries.firstOrNull { it.key == styleKey } ?: SpectrumStyle.BARS
     }
-    var displayMode by remember {
-        mutableStateOf(
-            SpectrumDisplayMode.entries.firstOrNull {
-                it.key == prefs.getString("display_mode", "vocal")
-            } ?: SpectrumDisplayMode.VOCAL,
-        )
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        var active = false
+        fun update(next: Boolean) {
+            if (active != next) {
+                active = next
+                SpectrumTap.setConsumerActive(next)
+            }
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> update(true)
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP, Lifecycle.Event.ON_DESTROY -> update(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        update(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            update(false)
+        }
     }
-    var displayDelayMs by remember {
-        mutableStateOf(prefs.getInt("display_delay_ms", 80).coerceIn(0, 250))
-    }
-    LaunchedEffect(displayDelayMs) {
-        SpectrumTap.setDisplayDelayMs(displayDelayMs)
+    LaunchedEffect(syncOffsetMs) {
+        SpectrumTap.setDisplayDelayMs(syncOffsetMs.coerceIn(-100, 150))
     }
     val motion = remember { VisualizerMotionState() }
-    val currentRefreshMs by rememberUpdatedState(refreshMs.coerceIn(8, 200))
-    val frame by produceState(motion.update(SpectrumTap.frame(), System.nanoTime()), style) {
+    val currentRefreshMs by rememberUpdatedState(refreshMs.coerceIn(33, 200))
+    val frame by produceState(motion.update(SpectrumTap.frame(), System.nanoTime())) {
         while (true) {
             value = motion.update(SpectrumTap.frame(), System.nanoTime())
             delay(currentRefreshMs.toLong())
@@ -216,8 +178,8 @@ fun PlayerSpectrumAnalyzer(
         Canvas(
             Modifier.fillMaxWidth().height(height).background(Color.Black.copy(alpha = 0.14f), RoundedCornerShape(12.dp)),
         ) {
-            val bands = smoothBands(applyDisplayMode(frame.bands, displayMode))
-            val peaks = smoothBands(applyDisplayMode(frame.peaks, displayMode))
+            val bands = smoothBands(frame.bands)
+            val peaks = smoothBands(frame.peaks)
             val wave = smoothWaveform(frame.waveform)
             val pad = 8.dp.toPx()
             val w = size.width - pad * 2
@@ -279,60 +241,5 @@ fun PlayerSpectrumAnalyzer(
                 }
             }
         }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            SpectrumStyle.entries.forEach { item ->
-                val selected = item == style
-                Text(
-                    item.label,
-                    color = if (selected) Color.Black else content.copy(alpha = .82f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.background(if (selected) (if (colorArgb == 0) accent else Color(colorArgb)) else content.copy(alpha = .10f), RoundedCornerShape(50))
-                        .clickable {
-                            style = item
-                            prefs.edit().putString("style", item.key).apply()
-                        }.padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            SpectrumDisplayMode.entries.forEach { item ->
-                val selected = item == displayMode
-                Text(
-                    item.label,
-                    color = if (selected) Color.Black else content.copy(alpha = .82f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.background(
-                        if (selected) (if (colorArgb == 0) accent else Color(colorArgb))
-                        else content.copy(alpha = .10f),
-                        RoundedCornerShape(50),
-                    ).clickable {
-                        displayMode = item
-                        prefs.edit().putString("display_mode", item.key).apply()
-                    }.padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
-        }
-        Text(
-            "Visualizer delay: ${displayDelayMs} ms",
-            color = content.copy(alpha = .82f),
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-        Slider(
-            value = displayDelayMs.toFloat(),
-            onValueChange = { displayDelayMs = ((it / 10f).toInt() * 10).coerceIn(0, 250) },
-            onValueChangeFinished = {
-                prefs.edit().putInt("display_delay_ms", displayDelayMs).apply()
-            },
-            valueRange = 0f..250f,
-            steps = 24,
-            modifier = Modifier.fillMaxWidth().height(28.dp),
-        )
     }
 }

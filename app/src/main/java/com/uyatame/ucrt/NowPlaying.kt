@@ -632,6 +632,8 @@ private fun PlayerPage(
                 compact = compact,
                 refreshMs = s.visualizerRefreshMs,
                 colorArgb = s.visualizerColor,
+                styleKey = s.visualizerStyle,
+                syncOffsetMs = s.visualizerSyncOffsetMs,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(if (compact) 3.dp else 8.dp))

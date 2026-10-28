@@ -90,6 +90,10 @@ data class AppSettings(
     val visualizerRefreshMs: Int = 24,
     /** スペクトラム色。0は再生画面のテーマ色へ自動追従、その他はARGB */
     val visualizerColor: Int = 0,
+    /** スペクトラム表示スタイル: wave / bars / mirror / line / circle */
+    val visualizerStyle: String = "bars",
+    /** 再生ヘッドから求めた自動遅延へ加える端末・出力経路向け微調整(ms) */
+    val visualizerSyncOffsetMs: Int = 58,
     /** アンビエントモードで背景のジャケットをぼかす(オフならぼかさずに薄く敷く) */
     val ambientBlur: Boolean = true,
     /** 画面下のナビゲーションバーを隠す(画面の下の端からスワイプすると一時的に出る) */
@@ -242,6 +246,8 @@ object Keys {
     val ambientPlayer = booleanPreferencesKey("ambientPlayer")
     val visualizerRefreshMs = intPreferencesKey("visualizerRefreshMs")
     val visualizerColor = intPreferencesKey("visualizerColor")
+    val visualizerStyle = stringPreferencesKey("visualizerStyle")
+    val visualizerSyncOffsetMs = intPreferencesKey("visualizerSyncOffsetMs")
     val themeColor = intPreferencesKey("themeColor")
     val textColor = intPreferencesKey("textColor")
     val ambientBlur = booleanPreferencesKey("ambientBlur")
@@ -333,6 +339,8 @@ class SettingsRepository(private val context: Context) {
             ambientPlayer = p[Keys.ambientPlayer] ?: d.ambientPlayer,
             visualizerRefreshMs = (p[Keys.visualizerRefreshMs] ?: d.visualizerRefreshMs).coerceIn(8, 200),
             visualizerColor = p[Keys.visualizerColor] ?: d.visualizerColor,
+            visualizerStyle = (p[Keys.visualizerStyle] ?: d.visualizerStyle).takeIf { it in setOf("wave", "bars", "mirror", "line", "circle") } ?: "bars",
+            visualizerSyncOffsetMs = (p[Keys.visualizerSyncOffsetMs] ?: d.visualizerSyncOffsetMs).coerceIn(-100, 150),
             themeColor = p[Keys.themeColor] ?: d.themeColor,
             textColor = p[Keys.textColor] ?: d.textColor,
             ambientBlur = p[Keys.ambientBlur] ?: d.ambientBlur,

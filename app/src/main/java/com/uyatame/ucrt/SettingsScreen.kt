@@ -595,6 +595,20 @@ private fun LauncherIconPicker(selectedId: String, onSelected: (String) -> Unit)
 @Composable
 private fun PlayerScreenPage(vm: MainViewModel, s: AppSettings) {
     Section("スペクトラムアナライザー / Spectrum Analyzer") {
+        val spectrumStyles = listOf("wave", "bars", "mirror", "line", "circle")
+        val spectrumStyleLabels = listOf("Wave", "Bars", "Mirror", "Line", "Circle")
+        ChoiceList(
+            "表示スタイル / Display style",
+            spectrumStyleLabels,
+            spectrumStyles.indexOf(s.visualizerStyle).coerceAtLeast(1),
+        ) { index -> vm.set(Keys.visualizerStyle, spectrumStyles[index]) }
+        IntSlider(
+            "同期微調整 / Sync fine adjustment",
+            s.visualizerSyncOffsetMs,
+            -100..150,
+            { value -> if (value >= 0) "+$value ms" else "$value ms" },
+            "再生ヘッドから自動推定した遅延に加算します。初期値は +58 ms です。 / Added to the playback-head delay estimate. Default: +58 ms.",
+        ) { vm.set(Keys.visualizerSyncOffsetMs, it) }
         IntSlider(
             "更新間隔 / Refresh interval",
             s.visualizerRefreshMs,
