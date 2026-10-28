@@ -74,9 +74,11 @@ class DsreFileConverter(private val context: Context) {
         cancelled = false
         val temp = File.createTempFile("dsre_", ".wav", context.cacheDir)
         val original = File.createTempFile("dsre_original_", ".media", context.cacheDir)
-        context.contentResolver.openInputStream(input)?.buffered()?.use { source ->
-            original.outputStream().buffered().use { target -> source.copyTo(target, 1 shl 20) }
-        } ?: throw IOException("Unable to cache the original input for metadata")
+        run {
+            context.contentResolver.openInputStream(input)?.buffered()?.use { source ->
+                original.outputStream().buffered().use { target -> source.copyTo(target, 1 shl 20) }
+            } ?: throw IOException("Unable to cache the original input for metadata")
+        }
         val encoded = if (outputFormat == "WAV") null else File.createTempFile(
             "dsre_encoded_",
             when (outputFormat) {
@@ -90,33 +92,41 @@ class DsreFileConverter(private val context: Context) {
         var frames = 0L
         try {
             onProgress(Progress(0f, "Opening input"))
-            frames = decodeToWavWithRetry(input, temp, parameters, onProgress)
+            frames = run {
+                decodeToWavWithRetry(input, temp, parameters, onProgress)
+            }
             checkCancelled()
             val completed = if (encoded == null) temp else {
                 onProgress(Progress(.97f, "Encoding $outputFormat"))
-                val code = DsreNativeEncoder.transcodeWav(
-                    temp.absolutePath,
-                    encoded.absolutePath,
-                    outputFormat,
-                    original.absolutePath,
-                )
+                val code = run {
+                    DsreNativeEncoder.transcodeWav(
+                        temp.absolutePath,
+                        encoded.absolutePath,
+                        outputFormat,
+                        original.absolutePath,
+                    )
+                }
                 if (code < 0) throw IOException(DsreNativeEncoder.lastError().ifBlank { "FFmpeg encoding failed: $code" })
                 encoded
             }
             checkCancelled()
             onProgress(Progress(.99f, "Saving output"))
-            context.contentResolver.openOutputStream(output, "w")?.use { dst ->
-                completed.inputStream().buffered().use { src -> src.copyTo(dst, 1 shl 16) }
-            } ?: throw IOException("Unable to open the output document")
+            run {
+                context.contentResolver.openOutputStream(output, "w")?.use { dst ->
+                    completed.inputStream().buffered().use { src -> src.copyTo(dst, 1 shl 16) }
+                } ?: throw IOException("Unable to open the output document")
+            }
             onProgress(Progress(1f, "Completed"))
             return Result(output, frames, parameters.targetSampleRate)
         } catch (e: Throwable) {
             runCatching { context.contentResolver.delete(output, null, null) }
             throw e
         } finally {
-            temp.delete()
-            original.delete()
-            encoded?.delete()
+            run {
+                temp.delete()
+                original.delete()
+                encoded?.delete()
+            }
         }
     }
 
@@ -124,7 +134,7 @@ class DsreFileConverter(private val context: Context) {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var resampler: RationalResampler? = null
-        var dsp: DsreDspEngine? = null
+        var dsp: DsreProcessingEngine? = null
         try {
             context.contentResolver.openAssetFileDescriptor(input, "r")?.use { afd ->
                 extractor.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
@@ -152,7 +162,7 @@ class DsreFileConverter(private val context: Context) {
             var sourceChannels = sourceFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
             resampler = if (sourceRate != p.targetSampleRate) RationalResampler(sourceRate, p.targetSampleRate, 2, null, 32) else null
-            dsp = DsreDspEngine(p.targetSampleRate, 2, p)
+            dsp = DsreEngineFactory.create(p.targetSampleRate, 2, p)
             var outFrames = 0L
             var lastPts = 0L
             val timeoutUs = 10_000L
@@ -199,7 +209,7 @@ class DsreFileConverter(private val context: Context) {
                         dsp = null
                         resampler = null
                         resampler = if (sourceRate != p.targetSampleRate) RationalResampler(sourceRate, p.targetSampleRate, 2, null, 32) else null
-                        dsp = DsreDspEngine(p.targetSampleRate, 2, p)
+                        dsp = DsreEngineFactory.create(p.targetSampleRate, 2, p)
                     }
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                     else -> if (index >= 0) {
@@ -215,7 +225,7 @@ class DsreFileConverter(private val context: Context) {
                                     if (count * 2 == dst.size) dst else dst.copyOf(count * 2)
                                 } ?: interleaved
                                 val channelFirst = deinterleave(converted)
-                                val processed = (dsp ?: DsreDspEngine(p.targetSampleRate, 2, p).also { dsp = it }).process(channelFirst)
+                                val processed = (dsp ?: DsreEngineFactory.create(p.targetSampleRate, 2, p).also { dsp = it }).process(channelFirst)
                                 writer.write(processed)
                                 outFrames += processed[0].size
                                 lastPts = info.presentationTimeUs
@@ -234,7 +244,7 @@ class DsreFileConverter(private val context: Context) {
                 val dst = FloatArray(max(2, rs.maxOut(rs.delayFrames) * 2))
                 val count = rs.process(zeros, rs.delayFrames, dst)
                 if (count > 0) {
-                    val processed = (dsp ?: DsreDspEngine(p.targetSampleRate, 2, p)).process(deinterleave(dst.copyOf(count * 2)))
+                    val processed = (dsp ?: DsreEngineFactory.create(p.targetSampleRate, 2, p)).process(deinterleave(dst.copyOf(count * 2)))
                     writer.write(processed)
                     outFrames += processed[0].size
                 }

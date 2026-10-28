@@ -1,5 +1,7 @@
 package com.uyatame.ucrt.dsre
 
+enum class DsreEngineMode { LEGACY_OPTIMIZED, OVERSAMPLED_PR }
+
 data class DsreParameters(
     val harmonicCount: Int,
     val strength: Float,
@@ -7,6 +9,7 @@ data class DsreParameters(
     val stereoWidth: Float,
     val dynamic: Float,
     val contextSeconds: Float,
+    val engineMode: DsreEngineMode = DsreEngineMode.LEGACY_OPTIMIZED,
 ) {
     init {
         require(harmonicCount in 1..24)

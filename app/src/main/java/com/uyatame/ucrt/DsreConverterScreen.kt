@@ -28,6 +28,7 @@ import com.uyatame.ucrt.dsre.DsreConversionCoordinator
 import com.uyatame.ucrt.dsre.DsreServiceJob
 import com.uyatame.ucrt.dsre.DsreServiceRequest
 import com.uyatame.ucrt.dsre.DsreParameters
+import com.uyatame.ucrt.dsre.DsreEngineMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +83,7 @@ private fun presetValues(p:DsrePreset)=when(p){
     var dynamic by rememberSaveable(settings.dsreDynamic){mutableFloatStateOf(settings.dsreDynamic)}
     var context by rememberSaveable(settings.dsreContext){mutableFloatStateOf(settings.dsreContext)}
     var format by rememberSaveable(settings.dsreFormat){mutableStateOf(settings.dsreFormat)}
+    var engineModeName by rememberSaveable { mutableStateOf(prefs.getString("dsre_engine_mode", DsreEngineMode.LEGACY_OPTIMIZED.name) ?: DsreEngineMode.LEGACY_OPTIMIZED.name) }
     val jobs=remember { mutableStateListOf<DsreBatchJob>() }
     val serviceState by DsreConversionCoordinator.state.collectAsState()
     val converting = serviceState.running
@@ -192,8 +194,9 @@ private fun presetValues(p:DsrePreset)=when(p){
         stereoWidth=0.50f+width.coerceIn(0f,1f),
         dynamic=1.00f+dynamic.coerceIn(0f,1f)*0.50f,
         contextSeconds=context.coerceIn(0f,1f)*0.10f,
+        engineMode=runCatching { DsreEngineMode.valueOf(engineModeName) }.getOrDefault(DsreEngineMode.LEGACY_OPTIMIZED),
     )
-    fun startBatch(retryFailed:Boolean=false){
+    fun startBatch(retryFailed:Boolean=false, overrideEngine:DsreEngineMode?=null){
         if(converting)return
         val treeUri=outputTreeText.takeIf{it.isNotBlank()}?.let(Uri::parse)
         val dir=treeUri?.let{DocumentFile.fromTreeUri(app,it)}
@@ -205,7 +208,7 @@ private fun presetValues(p:DsrePreset)=when(p){
         val request=DsreServiceRequest(
             jobs=selected.map{DsreServiceJob(it.uri.toString(),it.name)},
             outputTree=treeUri.toString(),
-            parameters=params(),
+            parameters=params().let { value -> overrideEngine?.let { value.copy(engineMode=it) } ?: value },
             format=format,
         )
         if(DsreConversionCoordinator.start(app,request)){
@@ -298,6 +301,12 @@ private fun presetValues(p:DsrePreset)=when(p){
             NormalizedSlider(S(R.string.dsre_stereo_width),width){width=it;custom();vm.set(Keys.dsreWidth,it)}
             NormalizedSlider(S(R.string.dsre_dynamic),dynamic){dynamic=it;custom();vm.set(Keys.dsreDynamic,it)}
             NormalizedSlider(S(R.string.dsre_context),context){context=it;custom();vm.set(Keys.dsreContext,it)}
+            EngineChoiceField(
+                label=tr("処理エンジン","Processing engine"),
+                selected=runCatching{DsreEngineMode.valueOf(engineModeName)}.getOrDefault(DsreEngineMode.LEGACY_OPTIMIZED),
+                enabled=!converting,
+                title={mode->if(mode==DsreEngineMode.LEGACY_OPTIMIZED)tr("現行DSRE・互換モード","Current DSRE compatibility mode") else tr("Oversampled PR・高品質モード","Oversampled PR high-quality mode")},
+            ){mode->engineModeName=mode.name;prefs.edit().putString("dsre_engine_mode",mode.name).apply()}
             ChoiceField(S(R.string.dsre_output_format),DsreOutputFormat.valueOf(format),DsreOutputFormat.entries.toList(),{it.name}){format=it.name;vm.set(Keys.dsreFormat,format)}
         }}
         UcrtCard(Modifier.fillMaxWidth()){Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
@@ -306,7 +315,10 @@ private fun presetValues(p:DsrePreset)=when(p){
             if(converting)Button({DsreConversionCoordinator.cancel(app)},Modifier.fillMaxWidth()){Text(tr("一括変換をキャンセル","Cancel batch"))}
             else{
                 Button({startBatch(false)},enabled=jobs.isNotEmpty()&&outputTreeText.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text(tr("一括変換を開始","Start batch conversion"))}
-                OutlinedButton({startBatch(true)},enabled=failed>0,modifier=Modifier.fillMaxWidth()){Text(tr("失敗項目を再試行","Retry failed items"))}
+                if(engineModeName==DsreEngineMode.OVERSAMPLED_PR.name){
+                    OutlinedButton({startBatch(true,DsreEngineMode.OVERSAMPLED_PR)},enabled=failed>0,modifier=Modifier.fillMaxWidth()){Text(tr("Oversampled PRで再試行","Retry with Oversampled PR"))}
+                    OutlinedButton({startBatch(true,DsreEngineMode.LEGACY_OPTIMIZED)},enabled=failed>0,modifier=Modifier.fillMaxWidth()){Text(tr("現行DSREで再試行","Retry with current DSRE"))}
+                }else OutlinedButton({startBatch(true,DsreEngineMode.LEGACY_OPTIMIZED)},enabled=failed>0,modifier=Modifier.fillMaxWidth()){Text(tr("現行DSREで再試行","Retry with current DSRE"))}
             }
         }}
     }}
@@ -368,5 +380,14 @@ private fun createUniqueOutput(dir:DocumentFile,inputName:String,format:DsreOutp
     while(true){val name=if(n==1)"$base.$ext" else "$base ($n).$ext";if(dir.findFile(name)==null)return dir.createFile(mime,name)?:throw IOException("Unable to create output: $name");n++}
 }
 private fun displayName(c:Context,u:Uri):String?=runCatching{c.contentResolver.query(u,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0)else null}}.getOrNull()
+@Composable private fun EngineChoiceField(label:String,selected:DsreEngineMode,enabled:Boolean,title:(DsreEngineMode)->String,onSelect:(DsreEngineMode)->Unit){
+    var open by rememberSaveable{mutableStateOf(false)}
+    ExposedDropdownMenuBox(expanded=open&&enabled,onExpandedChange={if(enabled)open=it}){
+        OutlinedTextField(value=title(selected),onValueChange={},readOnly=true,enabled=enabled,label={Text(label)},trailingIcon={ExposedDropdownMenuDefaults.TrailingIcon(open&&enabled)},modifier=Modifier.menuAnchor().fillMaxWidth())
+        ExposedDropdownMenu(expanded=open&&enabled,onDismissRequest={open=false}){
+            DsreEngineMode.entries.forEach{mode->DropdownMenuItem(text={Text(title(mode))},onClick={onSelect(mode);open=false})}
+        }
+    }
+}
 @Composable private fun <T> ChoiceField(label:String,selected:T,values:List<T>,title:(T)->String,onSelect:(T)->Unit){var open by rememberSaveable{mutableStateOf(false)};ExposedDropdownMenuBox(open,{open=it}){OutlinedTextField(title(selected),{},readOnly=true,label={Text(label)},trailingIcon={ExposedDropdownMenuDefaults.TrailingIcon(open)},modifier=Modifier.menuAnchor().fillMaxWidth());ExposedDropdownMenu(open,{open=false}){values.forEach{v->DropdownMenuItem({Text(title(v))},{onSelect(v);open=false})}}}}
 @Composable private fun NormalizedSlider(label:String,value:Float,onValue:(Float)->Unit){val normalized=value.coerceIn(0f,1f);Column{Row(Modifier.fillMaxWidth()){Text(label,Modifier.weight(1f));Text(String.format(Locale.US,"%.2f",normalized),fontWeight=FontWeight.Bold)};Slider(normalized,{onValue(it.coerceIn(0f,1f))},valueRange=0f..1f,steps=99)}}

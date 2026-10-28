@@ -15,23 +15,36 @@ class DsreDspEngine(
     private val sampleRate: Int,
     private val channels: Int,
     private val parameters: DsreParameters,
-) {
+) : DsreProcessingEngine {
+    private data class Band(val low: Double, val high: Double, val gain: Float, val harmonics: Int, val strength: Float)
+    private class FftWorkspace(length: Int) {
+        val sourceRe = DoubleArray(length)
+        val sourceIm = DoubleArray(length)
+        val bandRe = DoubleArray(length)
+        val bandIm = DoubleArray(length)
+    }
+
     private val contextFrames = max(0, (sampleRate * parameters.contextSeconds).toInt())
     private val fixedFftLength = 65_536
+    private val exciterBands: List<Band> = createExciterBands()
+    private val exciterMasks: Array<DoubleArray> = createExciterMasks(exciterBands)
+    private val fftWorkspace = object : ThreadLocal<FftWorkspace>() {
+        override fun initialValue(): FftWorkspace = FftWorkspace(fixedFftLength)
+    }
     private var tail = Array(channels) { FloatArray(0) }
     private var dynamicEnvelope = FloatArray(channels)
 
     init { require(sampleRate > 0); require(channels > 0) }
 
-    fun process(input: Array<FloatArray>): Array<FloatArray> {
+    override fun process(input: Array<FloatArray>): Array<FloatArray> {
         validate(input)
         if (input[0].isEmpty()) return Array(channels) { FloatArray(0) }
         val prefix = tail[0].size
         val work = Array(channels) { ch -> tail[ch] + input[ch] }
-        val excited = multibandExciter(work, parameters.harmonicCount / 16.0f)
+        val excited = run { multibandExciter(work, parameters.harmonicCount / 16.0f) }
         val valid = Array(channels) { ch -> excited[ch].copyOfRange(prefix, prefix + input[ch].size) }
-        val dynamic = statefulDynamic(valid, parameters.dynamic)
-        val stereo = stereoWidth(dynamic, parameters.stereoWidth)
+        val dynamic = run { statefulDynamic(valid, parameters.dynamic) }
+        val stereo = run { stereoWidth(dynamic, parameters.stereoWidth) }
         val blend = parameters.strength.coerceIn(0.1f, 0.8f)
         val output = Array(channels) { ch -> FloatArray(input[ch].size) { i ->
             finite(input[ch][i] * (1f - blend) + stereo[ch][i] * blend)
@@ -44,7 +57,7 @@ class DsreDspEngine(
         return output
     }
 
-    fun reset() { tail = Array(channels) { FloatArray(0) }; dynamicEnvelope = FloatArray(channels) }
+    override fun reset() { tail = Array(channels) { FloatArray(0) }; dynamicEnvelope = FloatArray(channels) }
 
     private fun validate(x: Array<FloatArray>) {
         require(x.size == channels) { "Expected $channels channels, got ${x.size}" }
@@ -52,29 +65,65 @@ class DsreDspEngine(
         require(x.all { it.size == n }) { "All channels must have equal frame counts" }
     }
 
-    private data class Band(val low: Double, val high: Double, val gain: Float, val harmonics: Int, val strength: Float)
-
-    private fun multibandExciter(x: Array<FloatArray>, intensity: Float): Array<FloatArray> {
+    private fun createExciterBands(): List<Band> {
         val nyquist = sampleRate / 2.0
-        val bands = listOf(
+        return listOf(
             Band(20.0,80.0,1.10f,3,.08f), Band(80.0,250.0,1.20f,4,.14f),
             Band(250.0,800.0,1.25f,5,.18f), Band(800.0,2500.0,1.35f,6,.22f),
             Band(2500.0,8000.0,1.45f,4,.25f), Band(8000.0,16000.0,1.50f,3,.18f),
             Band(16000.0,min(20000.0,nyquist-1000.0),1.35f,2,.12f),
         ).filter { it.low < nyquist && it.high < nyquist && it.high > it.low }
+    }
+
+    private fun createExciterMasks(bands: List<Band>): Array<DoubleArray> {
+        val n = fixedFftLength
+        val nyquist = sampleRate / 2.0
+        return Array(bands.size) { bandIndex ->
+            val band = bands[bandIndex]
+            val bw = max(20.0, (band.high - band.low) * .15)
+            val low1 = max(0.0, band.low - bw)
+            val high2 = min(nyquist, band.high + bw)
+            DoubleArray(n) { k ->
+                val signed = if (k <= n / 2) k else k - n
+                val frequency = abs(signed.toDouble()) * sampleRate / n
+                when {
+                    frequency < low1 || frequency > high2 -> 0.0
+                    frequency < band.low -> {
+                        val t = (frequency - low1) / max(1e-12, band.low - low1)
+                        .5 - .5 * cos(PI * t)
+                    }
+                    frequency <= band.high -> 1.0
+                    else -> {
+                        val t = (frequency - band.high) / max(1e-12, high2 - band.high)
+                        .5 + .5 * cos(PI * t)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun multibandExciter(x: Array<FloatArray>, intensity: Float): Array<FloatArray> {
+        val bands = exciterBands
         if (bands.isEmpty()) return Array(channels) { x[it].copyOf() }
         val scale = intensity.coerceIn(.1f,1.5f)
         fun processChannel(ch: Int): FloatArray {
-            val original=x[ch]; val enhanced=FloatArray(original.size)
+            val original=x[ch]
+            val enhanced=run { FloatArray(original.size) }
             val filteredBands=sharedBandpass(original,bands)
             for ((bandIndex, band) in bands.withIndex()) {
                 val filtered=filteredBands[bandIndex]
                 var center=(band.low+band.high)/2.0
                 if(center<=0.0) center=1.0
-                val harmonic=generateHarmonics(filtered,center,band.harmonics,band.strength*scale)
-                for(i in enhanced.indices) enhanced[i] += harmonic[i]*band.gain/bands.size
+                val harmonic=run {
+                    generateHarmonics(filtered,center,band.harmonics,band.strength*scale)
+                }
+                run {
+                    for(i in enhanced.indices) enhanced[i] += harmonic[i]*band.gain/bands.size
+                }
             }
-            for(i in enhanced.indices) enhanced[i]=finite(original[i]*.78f+enhanced[i]*.22f)
+            run {
+                for(i in enhanced.indices) enhanced[i]=finite(original[i]*.78f+enhanced[i]*.22f)
+            }
             return enhanced
         }
         if (channels == 1) return arrayOf(processChannel(0))
@@ -93,12 +142,15 @@ class DsreDspEngine(
     }
 
     private fun sharedBandpass(input: FloatArray, bands: List<Band>): Array<FloatArray> {
-        val outputs = Array(bands.size) { FloatArray(input.size) }
+        val outputs = run {
+            Array(bands.size) { FloatArray(input.size) }
+        }
         if (input.isEmpty() || bands.isEmpty()) return outputs
+        val workspace = fftWorkspace.get() ?: FftWorkspace(fixedFftLength).also { fftWorkspace.set(it) }
         var offset = 0
         while (offset < input.size) {
             val liveCount = min(fixedFftLength, input.size - offset)
-            processSharedForwardFftBlock(input, offset, liveCount, bands, outputs)
+            processSharedForwardFftBlock(input, offset, liveCount, bands, outputs, workspace)
             offset += liveCount
         }
         return outputs
@@ -110,54 +162,46 @@ class DsreDspEngine(
         liveCount: Int,
         bands: List<Band>,
         outputs: Array<FloatArray>,
+        workspace: FftWorkspace,
     ) {
         require(liveCount in 1..fixedFftLength)
         require(inputOffset >= 0 && inputOffset + liveCount <= input.size)
         require(outputs.size == bands.size)
         require(outputs.all { inputOffset + liveCount <= it.size })
 
-        // The source spectrum is identical for every band. Compute it once for this
-        // fixed 65,536-sample block, then clone the spectrum before applying each
-        // band's original mask and inverse transform. This preserves the previous
-        // per-band DSP math while removing six redundant forward FFTs per channel.
         val n = fixedFftLength
-        lateinit var sourceRe: DoubleArray
-        lateinit var sourceIm: DoubleArray
-        sourceRe = DoubleArray(n)
-        sourceIm = DoubleArray(n)
-        for (i in 0 until liveCount) sourceRe[i] = input[inputOffset + i].toDouble()
-        Fourier.transform(sourceRe, sourceIm, false)
+        val sourceRe = workspace.sourceRe
+        val sourceIm = workspace.sourceIm
+        run {
+            java.util.Arrays.fill(sourceRe, 0.0)
+            java.util.Arrays.fill(sourceIm, 0.0)
+            for (i in 0 until liveCount) sourceRe[i] = input[inputOffset + i].toDouble()
+        }
+        run {
+            Fourier.transform(sourceRe, sourceIm, false)
+        }
 
-        val nyquist = sampleRate / 2.0
-        for ((bandIndex, band) in bands.withIndex()) {
-            lateinit var re: DoubleArray
-            lateinit var im: DoubleArray
-            re = sourceRe.copyOf()
-            im = sourceIm.copyOf()
-            val bw = max(20.0, (band.high - band.low) * .15)
-            val low1 = max(0.0, band.low - bw)
-            val high2 = min(nyquist, band.high + bw)
-            for (k in 0 until n) {
-                    val signed = if (k <= n / 2) k else k - n
-                    val frequency = abs(signed.toDouble()) * sampleRate / n
-                    val mask = when {
-                        frequency < low1 || frequency > high2 -> 0.0
-                        frequency < band.low -> {
-                            val t = (frequency - low1) / max(1e-12, band.low - low1)
-                            .5 - .5 * cos(PI * t)
-                        }
-                        frequency <= band.high -> 1.0
-                        else -> {
-                            val t = (frequency - band.high) / max(1e-12, high2 - band.high)
-                            .5 + .5 * cos(PI * t)
-                        }
-                    }
-                    re[k] *= mask
-                    im[k] *= mask
+        for ((bandIndex, _) in bands.withIndex()) {
+            val re = workspace.bandRe
+            val im = workspace.bandIm
+            run {
+                sourceRe.copyInto(re, 0, 0, n)
+                sourceIm.copyInto(im, 0, 0, n)
             }
-            Fourier.transform(re, im, true)
+            val mask = exciterMasks[bandIndex]
+            run {
+                for (k in 0 until n) {
+                    re[k] *= mask[k]
+                    im[k] *= mask[k]
+                }
+            }
+            run {
+                Fourier.transform(re, im, true)
+            }
             val output = outputs[bandIndex]
-            for (i in 0 until liveCount) output[inputOffset + i] = finite(re[i].toFloat())
+            run {
+                for (i in 0 until liveCount) output[inputOffset + i] = finite(re[i].toFloat())
+            }
         }
     }
 
@@ -190,7 +234,7 @@ class DsreDspEngine(
     }
 }
 
-private object Fourier {
+internal object Fourier {
     private const val fixedPlanLength = 65_536
     private val fixedPlan by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { Radix2Plan(fixedPlanLength) }
 
